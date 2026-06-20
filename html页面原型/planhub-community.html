@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>planHub - 社区</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #f8fafc;
+            --accent: #0ea5e9;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --sidebar-bg: #1e293b;
+            --card-bg: white;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--secondary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .dashboard-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            color: white;
+            padding: 24px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .logo {
+            padding: 0 24px 32px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .logo h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+        }
+
+        .nav-menu {
+            padding: 24px 0;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 3px solid transparent;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            background: rgba(255,255,255,0.1);
+            border-left-color: var(--primary);
+        }
+
+        .nav-item i {
+            width: 20px;
+            text-align: center;
+        }
+
+        .user-profile {
+            padding: 24px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: auto;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 280px;
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .search-bar {
+            display: flex;
+            gap: 12px;
+            max-width: 400px;
+        }
+
+        .search-input {
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            width: 100%;
+            font-size: 1rem;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid var(--border);
+            color: var(--text-primary);
+        }
+
+        .btn-outline:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        /* Filter Tabs */
+        .filter-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 16px;
+        }
+
+        .filter-tab {
+            padding: 10px 20px;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+        }
+
+        .filter-tab:hover {
+            background: var(--secondary);
+        }
+
+        .filter-tab.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        /* Community Feed */
+        .feed-container {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 24px;
+        }
+
+        .posts-feed {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .post-card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px var(--shadow);
+            border: 1px solid var(--border);
+            transition: all 0.3s ease;
+        }
+
+        .post-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px var(--shadow);
+        }
+
+        .post-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .post-avatar {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.2rem;
+        }
+
+        .post-user-info {
+            flex: 1;
+        }
+
+        .post-user {
+            font-weight: 600;
+            font-size: 1.1rem;
+            margin-bottom: 2px;
+        }
+
+        .post-time {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .post-content {
+            line-height: 1.6;
+            margin-bottom: 20px;
+            font-size: 1.05rem;
+        }
+
+        .post-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .tag {
+            padding: 4px 12px;
+            background: var(--secondary);
+            border-radius: 16px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .post-actions {
+            display: flex;
+            gap: 24px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+        }
+
+        .action-btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.95rem;
+            transition: color 0.3s ease;
+            padding: 8px 12px;
+            border-radius: 8px;
+        }
+
+        .action-btn:hover {
+            color: var(--primary);
+            background: var(--secondary);
+        }
+
+        .action-btn.active {
+            color: var(--primary);
+            background: var(--secondary);
+        }
+
+        .create-post {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px var(--shadow);
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+        }
+
+        .create-post-header {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .create-post-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        .create-post-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 12px;
+            font-size: 1rem;
+            resize: vertical;
+            min-height: 60px;
+            transition: border-color 0.3s ease;
+        }
+
+        .create-post-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .create-post-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 16px;
+        }
+
+        .post-options {
+            display: flex;
+            gap: 12px;
+        }
+
+        .option-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .option-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--secondary);
+        }
+
+        /* Sidebar Panel */
+        .sidebar-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel-card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 4px 6px var(--shadow);
+            border: 1px solid var(--border);
+        }
+
+        .panel-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-primary);
+        }
+
+        .trending-topics {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .topic-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: var(--secondary);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .topic-item:hover {
+            background: var(--border);
+            transform: translateX(4px);
+        }
+
+        .topic-name {
+            font-weight: 500;
+        }
+
+        .topic-count {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            background: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+        }
+
+        .online-users {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .user-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: var(--secondary);
+            border-radius: 8px;
+            transition: background 0.3s ease;
+        }
+
+        .user-item:hover {
+            background: var(--border);
+        }
+
+        .user-status {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--success);
+            position: relative;
+        }
+
+        .user-status::after {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            border: 2px solid var(--success);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .user-info h4 {
+            font-size: 0.95rem;
+            margin-bottom: 2px;
+        }
+
+        .user-info p {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 64px 24px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state i {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .empty-state p {
+            font-size: 1.1rem;
+            margin-bottom: 24px;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .feed-container {
+                grid-template-columns: 1fr;
+            }
+            .sidebar-panel {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 240px;
+            }
+            .main-content {
+                margin-left: 240px;
+                padding: 16px;
+            }
+            .feed-container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-container">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="logo">
+            <h1>planHub</h1>
+        </div>
+
+        <nav class="nav-menu">
+            <div class="nav-item">
+                <i class="fas fa-home"></i>
+                <span>首页</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-calendar-check"></i>
+                <span>我的计划</span>
+            </div>
+            <div class="nav-item active">
+                <i class="fas fa-users"></i>
+                <span>社区</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-search"></i>
+                <span>搜索</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-user-circle"></i>
+                <span>个人中心</span>
+            </div>
+        </nav>
+
+        <div class="user-profile">
+            <div class="user-info">
+                <div class="avatar">张</div>
+                <div>
+                    <div style="font-weight: 600;">张三</div>
+                    <div style="color: #94a3b8; font-size: 0.9rem;">zhang@example.com</div>
+                </div>
+            </div>
+            <button class="btn" style="margin-top: 16px; background: transparent; border: 2px solid rgba(255,255,255,0.2); color: white; width: 100%; padding: 10px;">
+                <i class="fas fa-sign-out-alt"></i>
+                退出登录
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="header">
+            <h1 class="page-title">社区动态</h1>
+            <div class="search-bar">
+                <input type="text" class="search-input" placeholder="搜索话题、用户...">
+                <button class="btn btn-primary">
+                    <i class="fas fa-search"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Filter Tabs -->
+        <div class="filter-tabs">
+            <div class="filter-tab active">最新</div>
+            <div class="filter-tab">热门</div>
+            <div class="filter-tab">关注</div>
+            <div class="filter-tab">精华</div>
+        </div>
+
+        <!-- Create Post -->
+        <div class="create-post">
+            <div class="create-post-header">
+                <div class="create-post-avatar">张</div>
+                <textarea class="create-post-input" placeholder="分享你的计划进展或心得..."></textarea>
+            </div>
+            <div class="create-post-footer">
+                <div class="post-options">
+                    <button class="option-btn">
+                        <i class="fas fa-hashtag"></i>
+                        添加标签
+                    </button>
+                    <button class="option-btn">
+                        <i class="fas fa-image"></i>
+                        图片
+                    </button>
+                    <button class="option-btn">
+                        <i class="fas fa-link"></i>
+                        链接
+                    </button>
+                </div>
+                <button class="btn btn-primary">
+                    发布
+                </button>
+            </div>
+        </div>
+
+        <!-- Community Feed -->
+        <div class="feed-container">
+            <div class="posts-feed">
+                <!-- Post 1 -->
+                <div class="post-card">
+                    <div class="post-header">
+                        <div class="post-avatar">李</div>
+                        <div class="post-user-info">
+                            <div class="post-user">李四</div>
+                            <div class="post-time">2小时前</div>
+                        </div>
+                        <button class="btn-icon" style="margin-left: auto;">
+                            <i class="fas fa-ellipsis-h"></i>
+                        </button>
+                    </div>
+                    <div class="post-content">
+                        刚刚完成了本周的学习计划！分享一下我的学习心得：React Hooks的使用确实让代码变得更加简洁，useEffect和useCallback的组合使用特别实用。建议大家多练习这些模式，真的能大大提升开发效率！
+                    </div>
+                    <div class="post-tags">
+                        <span class="tag">#React</span>
+                        <span class="tag">#前端开发</span>
+                        <span class="tag">#学习分享</span>
+                    </div>
+                    <div class="post-actions">
+                        <div class="action-btn" onclick="toggleLike(this)">
+                            <i class="fas fa-heart"></i>
+                            <span>点赞</span>
+                            <span style="display: none;">(12)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-comment"></i>
+                            <span>评论</span>
+                            <span style="display: none;">(5)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-share"></i>
+                            <span>分享</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-bookmark"></i>
+                            <span>收藏</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Post 2 -->
+                <div class="post-card">
+                    <div class="post-header">
+                        <div class="post-avatar">王</div>
+                        <div class="post-user-info">
+                            <div class="post-user">王五</div>
+                            <div class="post-time">5小时前</div>
+                        </div>
+                        <button class="btn-icon" style="margin-left: auto;">
+                            <i class="fas fa-ellipsis-h"></i>
+                        </button>
+                    </div>
+                    <div class="post-content">
+                        健身打卡第25天！今天完成了45分钟的有氧训练+力量训练，感觉身体状况越来越好。想问问大家有什么好的运动恢复方法吗？特别是针对肌肉酸痛的处理。
+                    </div>
+                    <div class="post-tags">
+                        <span class="tag">#健身</span>
+                        <span class="tag">#运动打卡</span>
+                        <span class="tag">#健康</span>
+                    </div>
+                    <div class="post-actions">
+                        <div class="action-btn" onclick="toggleLike(this)">
+                            <i class="fas fa-heart"></i>
+                            <span>点赞</span>
+                            <span style="display: none;">(8)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-comment"></i>
+                            <span>评论</span>
+                            <span style="display: none;">(3)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-share"></i>
+                            <span>分享</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-bookmark"></i>
+                            <span>收藏</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Post 3 -->
+                <div class="post-card">
+                    <div class="post-header">
+                        <div class="post-avatar">赵</div>
+                        <div class="post-user-info">
+                            <div class="post-user">赵六</div>
+                            <div class="post-time">1天前</div>
+                        </div>
+                        <button class="btn-icon" style="margin-left: auto;">
+                            <i class="fas fa-ellipsis-h"></i>
+                        </button>
+                    </div>
+                    <div class="post-content">
+                        《深度工作》读书笔记分享：作者强调在数字化时代保持专注的重要性。书中提到的"双峰哲学"（Bimodal philosophy）让我很有启发——将时间分割成专注工作和休闲时间两个部分。正在尝试这个方法来提升工作效率。
+                    </div>
+                    <div class="post-tags">
+                        <span class="tag">#读书笔记</span>
+                        <span class="tag">#深度工作</span>
+                        <span class="tag">#效率提升</span>
+                    </div>
+                    <div class="post-actions">
+                        <div class="action-btn" onclick="toggleLike(this)">
+                            <i class="fas fa-heart"></i>
+                            <span>点赞</span>
+                            <span style="display: none;">(15)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-comment"></i>
+                            <span>评论</span>
+                            <span style="display: none;">(7)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-share"></i>
+                            <span>分享</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-bookmark"></i>
+                            <span>收藏</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Post 4 -->
+                <div class="post-card">
+                    <div class="post-header">
+                        <div class="post-avatar">刘</div>
+                        <div class="post-user-info">
+                            <div class="post-user">刘小美</div>
+                            <div class="post-time">2天前</div>
+                        </div>
+                        <button class="btn-icon" style="margin-left: auto;">
+                            <i class="fas fa-ellipsis-h"></i>
+                        </button>
+                    </div>
+                    <div class="post-content">
+                        准备技术分享会的PPT终于完成了！主题是"现代Web开发最佳实践"，涵盖了性能优化、代码组织、测试策略等几个方面。欢迎大家来参加，一起交流学习！
+                    </div>
+                    <div class="post-tags">
+                        <span class="tag">#技术分享</span>
+                        <span class="tag">#Web开发</span>
+                        <span class="tag">#PPT</span>
+                    </div>
+                    <div class="post-actions">
+                        <div class="action-btn" onclick="toggleLike(this)">
+                            <i class="fas fa-heart"></i>
+                            <span>点赞</span>
+                            <span style="display: none;">(20)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-comment"></i>
+                            <span>评论</span>
+                            <span style="display: none;">(12)</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-share"></i>
+                            <span>分享</span>
+                        </div>
+                        <div class="action-btn">
+                            <i class="fas fa-bookmark"></i>
+                            <span>收藏</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Sidebar Panel -->
+            <div class="sidebar-panel">
+                <!-- Trending Topics -->
+                <div class="panel-card">
+                    <h3 class="panel-title">热门话题</h3>
+                    <div class="trending-topics">
+                        <div class="topic-item">
+                            <span class="topic-name">#React学习</span>
+                            <span class="topic-count">128</span>
+                        </div>
+                        <div class="topic-item">
+                            <span class="topic-name">#健身打卡</span>
+                            <span class="topic-count">89</span>
+                        </div>
+                        <div class="topic-item">
+                            <span class="topic-name">#读书分享</span>
+                            <span class="topic-count">67</span>
+                        </div>
+                        <div class="topic-item">
+                            <span class="topic-name">#技术分享</span>
+                            <span class="topic-count">45</span>
+                        </div>
+                        <div class="topic-item">
+                            <span class="topic-name">#目标达成</span>
+                            <span class="topic-count">32</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Online Users -->
+                <div class="panel-card">
+                    <h3 class="panel-title">在线用户</h3>
+                    <div class="online-users">
+                        <div class="user-item">
+                            <div class="user-status"></div>
+                            <div class="user-info">
+                                <h4>李四</h4>
+                                <p>正在学习 React...</p>
+                            </div>
+                        </div>
+                        <div class="user-item">
+                            <div class="user-status"></div>
+                            <div class="user-info">
+                                <h4>王五</h4>
+                                <p>健身打卡中</p>
+                            </div>
+                        </div>
+                        <div class="user-item">
+                            <div class="user-status"></div>
+                            <div class="user-info">
+                                <h4>赵六</h4>
+                                <p>阅读《深度工作》</p>
+                            </div>
+                        </div>
+                        <div class="user-item">
+                            <div class="user-status"></div>
+                            <div class="user-info">
+                                <h4>刘小美</h4>
+                                <p>准备技术分享</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function toggleLike(button) {
+        const icon = button.querySelector('i');
+        const countSpan = button.querySelector('span:last-child');
+
+        if (icon.classList.contains('fa-heart')) {
+            icon.classList.remove('fa-heart');
+            icon.classList.add('fas', 'fa-heart', 'active');
+            countSpan.style.display = 'inline';
+            const currentCount = parseInt(countSpan.textContent.match(/\d+/)[0]);
+            countSpan.textContent = `(${currentCount + 1})`;
+        } else {
+            icon.classList.remove('fas', 'fa-heart', 'active');
+            icon.classList.add('far', 'fa-heart');
+            const currentCount = parseInt(countSpan.textContent.match(/\d+/)[0]);
+            countSpan.textContent = `(${Math.max(0, currentCount - 1)})`;
+            if (parseInt(countSpan.textContent.match(/\d+/)[0]) === 0) {
+                countSpan.style.display = 'none';
+            }
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Filter tabs functionality
+        const filterTabs = document.querySelectorAll('.filter-tab');
+        const posts = document.querySelectorAll('.post-card');
+
+        filterTabs.forEach(tab => {
+            tab.addEventListener('click', function() {
+                filterTabs.forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+
+                const filter = this.textContent.trim();
+                // In a real app, this would filter based on actual data
+                console.log(`Filtering by: ${filter}`);
+            });
+        });
+
+        // Search functionality
+        const searchInput = document.querySelector('.search-input');
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                const searchTerm = this.value.toLowerCase();
+                posts.forEach(post => {
+                    const content = post.querySelector('.post-content').textContent.toLowerCase();
+                    const user = post.querySelector('.post-user').textContent.toLowerCase();
+                    if (content.includes(searchTerm) || user.includes(searchTerm)) {
+                        post.style.display = 'block';
+                    } else {
+                        post.style.display = 'none';
+                    }
+                });
+            }
+        });
+
+        // Create post functionality
+        const createPostInput = document.querySelector('.create-post-input');
+        const createPostBtn = document.querySelector('.create-post-footer .btn-primary');
+
+        createPostBtn.addEventListener('click', function() {
+            if (createPostInput.value.trim()) {
+                alert('帖子发布成功！');
+                createPostInput.value = '';
+            }
+        });
+
+        // Auto-resize textarea
+        createPostInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+        });
+    });
+</script>
+
+</body>
+</html>

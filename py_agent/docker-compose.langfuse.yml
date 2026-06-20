@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: planhub-langfuse
+    ports:
+      - "3000:3000"
+    environment:
+      # 数据库配置
+      DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+
+      # 认证配置（开发环境使用固定密钥）
+      LANGFUSE_PUBLIC_KEY: pk-lf-dev-public-key-12345
+      LANGFUSE_SECRET_KEY: sk-lf-dev-secret-key-12345
+      LANGFUSE_HOST: http://localhost:3000
+      LANGFUSE_BASEURL: http://localhost:3000
+
+      # 加密密钥（开发环境固定值）
+      LANGFUSE_ENCRYPTION_KEY: dev-encryption-key-32chars!!
+
+      # 功能开关
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      LANGFUSE_FORCE_SIGN_OUT: "false"
+
+      # ClickHouse 配置（可选，用于大规模分析）
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB: default
+
+      # Redis 配置
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks:
+      - langfuse-network
+
+  postgres:
+    image: postgres:15
+    container_name: planhub-langfuse-postgres
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - langfuse-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: planhub-langfuse-redis
+    restart: unless-stopped
+    networks:
+      - langfuse-network
+
+  # 可选：ClickHouse（大规模分析）
+  # clickhouse:
+  #   image: clickhouse/clickhouse-server:latest
+  #   container_name: planhub-langfuse-clickhouse
+  #   environment:
+  #     CLICKHOUSE_USER: clickhouse
+  #     CLICKHOUSE_PASSWORD: clickhouse
+  #     CLICKHOUSE_DB: default
+  #   volumes:
+  #     - langfuse-clickhouse-data:/var/lib/clickhouse
+  #   restart: unless-stopped
+  #   networks:
+  #     - langfuse-network
+
+volumes:
+  langfuse-postgres-data:
+  # langfuse-clickhouse-data:
+
+networks:
+  langfuse-network:
+    driver: bridge

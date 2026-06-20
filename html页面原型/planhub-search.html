@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>planHub - 搜索</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #f8fafc;
+            --accent: #0ea5e9;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --sidebar-bg: #1e293b;
+            --card-bg: white;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--secondary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .dashboard-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            color: white;
+            padding: 24px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .logo {
+            padding: 0 24px 32px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .logo h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+        }
+
+        .nav-menu {
+            padding: 24px 0;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 3px solid transparent;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            background: rgba(255,255,255,0.1);
+            border-left-color: var(--primary);
+        }
+
+        .nav-item i {
+            width: 20px;
+            text-align: center;
+        }
+
+        .user-profile {
+            padding: 24px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: auto;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 280px;
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .search-container {
+            max-width: 600px;
+            margin: 0 auto 32px;
+            text-align: center;
+        }
+
+        .search-input-wrapper {
+            position: relative;
+            margin-bottom: 16px;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+            font-size: 1.2rem;
+        }
+
+        .search-input-large {
+            width: 100%;
+            padding: 20px 60px 20px 60px;
+            border: 2px solid var(--border);
+            border-radius: 16px;
+            font-size: 1.2rem;
+            background: var(--card-bg);
+            transition: all 0.3s ease;
+        }
+
+        .search-input-large:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+        }
+
+        .search-btn {
+            position: absolute;
+            right: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 12px 24px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .search-btn:hover {
+            background: var(--primary-dark);
+            transform: translateY(-50%) scale(1.05);
+        }
+
+        .quick-filters {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .filter-chip {
+            padding: 10px 20px;
+            background: var(--card-bg);
+            border: 2px solid var(--border);
+            border-radius: 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            font-size: 0.95rem;
+        }
+
+        .filter-chip:hover,
+        .filter-chip.active {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: rgba(37, 99, 235, 0.05);
+        }
+
+        /* Search Results */
+        .results-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .result-section {
+            margin-bottom: 40px;
+        }
+
+        .section-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title i {
+            color: var(--primary);
+        }
+
+        /* Result Items */
+        .result-item {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            box-shadow: 0 2px 4px var(--shadow);
+            border: 1px solid var(--border);
+            transition: all 0.3s ease;
+        }
+
+        .result-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px var(--shadow);
+        }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .result-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .result-title:hover {
+            color: var(--primary-dark);
+        }
+
+        .result-meta {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        .result-type {
+            padding: 4px 12px;
+            background: var(--secondary);
+            border-radius: 12px;
+            font-weight: 500;
+        }
+
+        .result-description {
+            line-height: 1.6;
+            margin-bottom: 12px;
+            color: var(--text-primary);
+        }
+
+        .result-highlight {
+            background: linear-gradient(120deg, var(--warning) 0%, var(--warning) 100%);
+            background-repeat: no-repeat;
+            background-size: 100% 30%;
+            background-position: 0 88%;
+            padding: 0 2px;
+        }
+
+        .result-tags {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .result-tag {
+            padding: 4px 12px;
+            background: var(--secondary);
+            border-radius: 12px;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        /* No Results */
+        .no-results {
+            text-align: center;
+            padding: 64px 24px;
+            color: var(--text-secondary);
+        }
+
+        .no-results i {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .no-results h3 {
+            font-size: 1.5rem;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .suggestions {
+            list-style: none;
+            text-align: left;
+            max-width: 400px;
+            margin: 24px auto;
+            padding: 20px;
+            background: var(--card-bg);
+            border-radius: 12px;
+            box-shadow: 0 2px 4px var(--shadow);
+        }
+
+        .suggestions li {
+            padding: 8px 0;
+            cursor: pointer;
+            transition: color 0.3s ease;
+        }
+
+        .suggestions li:hover {
+            color: var(--primary);
+        }
+
+        /* Popular Searches */
+        .popular-searches {
+            margin-top: 40px;
+            text-align: center;
+        }
+
+        .popular-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: var(--text-primary);
+        }
+
+        .popular-tags {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .popular-tag {
+            padding: 8px 16px;
+            background: var(--secondary);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .popular-tag:hover {
+            background: var(--primary);
+            color: white;
+            transform: translateY(-2px);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 240px;
+            }
+            .main-content {
+                margin-left: 240px;
+                padding: 16px;
+            }
+            .search-input-large {
+                font-size: 1rem;
+                padding: 16px 50px 16px 50px;
+            }
+            .search-btn {
+                padding: 10px 20px;
+                font-size: 1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-container">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="logo">
+            <h1>planHub</h1>
+        </div>
+
+        <nav class="nav-menu">
+            <div class="nav-item">
+                <i class="fas fa-home"></i>
+                <span>首页</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-calendar-check"></i>
+                <span>我的计划</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-users"></i>
+                <span>社区</span>
+            </div>
+            <div class="nav-item active">
+                <i class="fas fa-search"></i>
+                <span>搜索</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-user-circle"></i>
+                <span>个人中心</span>
+            </div>
+        </nav>
+
+        <div class="user-profile">
+            <div class="user-info">
+                <div class="avatar">张</div>
+                <div>
+                    <div style="font-weight: 600;">张三</div>
+                    <div style="color: #94a3b8; font-size: 0.9rem;">zhang@example.com</div>
+                </div>
+            </div>
+            <button class="btn" style="margin-top: 16px; background: transparent; border: 2px solid rgba(255,255,255,0.2); color: white; width: 100%; padding: 10px;">
+                <i class="fas fa-sign-out-alt"></i>
+                退出登录
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="header">
+            <h1 class="page-title">搜索</h1>
+        </div>
+
+        <!-- Search Container -->
+        <div class="search-container">
+            <div class="search-input-wrapper">
+                <i class="fas fa-search search-icon"></i>
+                <input type="text" class="search-input-large" id="searchInput" placeholder="搜索用户、计划、话题..." autofocus>
+                <button class="search-btn" onclick="performSearch()">
+                    搜索
+                </button>
+            </div>
+            <div class="quick-filters">
+                <div class="filter-chip active">全部</div>
+                <div class="filter-chip">用户</div>
+                <div class="filter-chip">计划</div>
+                <div class="filter-chip">帖子</div>
+                <div class="filter-chip">标签</div>
+            </div>
+        </div>
+
+        <!-- Search Results or No Results -->
+        <div id="resultsContainer">
+            <!-- Results will be populated here -->
+        </div>
+
+        <!-- Popular Searches (shown when no search performed) -->
+        <div class="popular-searches" id="popularSearches">
+            <h3 class="popular-title">热门搜索</h3>
+            <div class="popular-tags">
+                <span class="popular-tag" onclick="quickSearch('React')">React</span>
+                <span class="popular-tag" onclick="quickSearch('健身')">健身</span>
+                <span class="popular-tag" onclick="quickSearch('读书')">读书</span>
+                <span class="popular-tag" onclick="quickSearch('技术分享')">技术分享</span>
+                <span class="popular-tag" onclick="quickSearch('目标达成')">目标达成</span>
+                <span class="popular-tag" onclick="quickSearch('学习计划')">学习计划</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function performSearch() {
+        const query = document.getElementById('searchInput').value.trim();
+        const resultsContainer = document.getElementById('resultsContainer');
+        const popularSearches = document.getElementById('popularSearches');
+
+        if (!query) {
+            // Show popular searches if no query
+            resultsContainer.innerHTML = '';
+            popularSearches.style.display = 'block';
+            return;
+        }
+
+        // Hide popular searches
+        popularSearches.style.display = 'none';
+
+        // Simulate search results
+        const results = generateMockResults(query);
+
+        resultsContainer.innerHTML = `
+            <div class="results-container">
+                ${results.users.length > 0 ? `
+                    <div class="result-section">
+                        <h3 class="section-title">
+                            <i class="fas fa-users"></i>
+                            用户 (${results.users.length})
+                        </h3>
+                        ${results.users.map(user => `
+                            <div class="result-item">
+                                <div class="result-header">
+                                    <a href="#" class="result-title">${user.name}</a>
+                                    <span class="result-meta">
+                                        <span class="result-type">用户</span>
+                                        <span>${user.plans}个计划</span>
+                                    </span>
+                                </div>
+                                <p class="result-description">${user.description}</p>
+                                <div class="result-tags">
+                                    ${user.tags.map(tag => `<span class="result-tag">#${tag}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+
+                ${results.plans.length > 0 ? `
+                    <div class="result-section">
+                        <h3 class="section-title">
+                            <i class="fas fa-calendar-check"></i>
+                            计划 (${results.plans.length})
+                        </h3>
+                        ${results.plans.map(plan => `
+                            <div class="result-item">
+                                <div class="result-header">
+                                    <a href="#" class="result-title">${plan.title}</a>
+                                    <span class="result-meta">
+                                        <span class="result-type">计划</span>
+                                        <span>截止：${plan.deadline}</span>
+                                    </span>
+                                </div>
+                                <p class="result-description">${plan.description}</p>
+                                <div class="result-tags">
+                                    ${plan.tags.map(tag => `<span class="result-tag">#${tag}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+
+                ${results.posts.length > 0 ? `
+                    <div class="result-section">
+                        <h3 class="section-title">
+                            <i class="fas fa-comment"></i>
+                            帖子 (${results.posts.length})
+                        </h3>
+                        ${results.posts.map(post => `
+                            <div class="result-item">
+                                <div class="result-header">
+                                    <a href="#" class="result-title">${post.user}的帖子</a>
+                                    <span class="result-meta">
+                                        <span class="result-type">帖子</span>
+                                        <span>${post.time}</span>
+                                    </span>
+                                </div>
+                                <p class="result-description">${post.content}</p>
+                                <div class="result-tags">
+                                    ${post.tags.map(tag => `<span class="result-tag">#${tag}</span>`).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : ''}
+
+                ${results.tags.length > 0 ? `
+                    <div class="result-section">
+                        <h3 class="section-title">
+                            <i class="fas fa-hashtag"></i>
+                            相关标签 (${results.tags.length})
+                        </h3>
+                        <div class="popular-tags" style="justify-content: flex-start;">
+                            ${results.tags.map(tag => `
+                                <span class="popular-tag" onclick="quickSearch('${tag}')">#${tag}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${results.users.length === 0 && results.plans.length === 0 && results.posts.length === 0 && results.tags.length === 0 ? `
+                    <div class="no-results">
+                        <i class="fas fa-search"></i>
+                        <h3>没有找到相关内容</h3>
+                        <p>尝试使用不同的关键词或浏览热门搜索</p>
+                        <ul class="suggestions">
+                            <li>检查拼写是否正确</li>
+                            <li>尝试更通用的关键词</li>
+                            <li>使用不同的搜索词</li>
+                        </ul>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+
+    function quickSearch(term) {
+        document.getElementById('searchInput').value = term;
+        performSearch();
+    }
+
+    function generateMockResults(query) {
+        const mockData = {
+            users: [
+                {
+                    name: '李四',
+                    plans: 8,
+                    description: '前端开发工程师，专注于React和Vue.js技术栈',
+                    tags: ['React', '前端', 'JavaScript']
+                },
+                {
+                    name: '王五',
+                    plans: 5,
+                    description: '健身爱好者，坚持运动打卡3个月',
+                    tags: ['健身', '运动', '健康']
+                }
+            ],
+            plans: [
+                {
+                    title: '学习 React Hooks 高级用法',
+                    deadline: '2024年1月15日',
+                    description: '深入学习useEffect、useCallback、useMemo等Hook的高级用法，提升React应用性能',
+                    tags: ['React', '前端', '学习计划']
+                },
+                {
+                    title: '30天健身挑战',
+                    deadline: '2024年2月1日',
+                    description: '完成30天的健身计划，包括有氧运动和力量训练',
+                    tags: ['健身', '运动', '挑战']
+                }
+            ],
+            posts: [
+                {
+                    user: '赵六',
+                    time: '2小时前',
+                    content: '今天学习了React的useContext Hook，感觉对组件间的数据传递有了更深的理解。分享一下学习心得...',
+                    tags: ['React', '学习分享']
+                },
+                {
+                    user: '刘小美',
+                    time: '5小时前',
+                    content: '健身打卡第25天！今天完成了45分钟的有氧训练，感觉身体状况越来越好。',
+                    tags: ['健身', '打卡', '进展']
+                }
+            ],
+            tags: ['React', '健身', '学习', '前端', 'JavaScript']
+        };
+
+        // Filter results based on query
+        const lowerQuery = query.toLowerCase();
+        return {
+            users: mockData.users.filter(user =>
+                user.name.toLowerCase().includes(lowerQuery) ||
+                user.description.toLowerCase().includes(lowerQuery) ||
+                user.tags.some(tag => tag.toLowerCase().includes(lowerQuery))
+            ),
+            plans: mockData.plans.filter(plan =>
+                plan.title.toLowerCase().includes(lowerQuery) ||
+                plan.description.toLowerCase().includes(lowerQuery) ||
+                plan.tags.some(tag => tag.toLowerCase().includes(lowerQuery))
+            ),
+            posts: mockData.posts.filter(post =>
+                post.user.toLowerCase().includes(lowerQuery) ||
+                post.content.toLowerCase().includes(lowerQuery) ||
+                post.tags.some(tag => tag.toLowerCase().includes(lowerQuery))
+            ),
+            tags: mockData.tags.filter(tag =>
+                tag.toLowerCase().includes(lowerQuery)
+            )
+        };
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Auto-focus search input
+        const searchInput = document.getElementById('searchInput');
+        searchInput.focus();
+
+        // Enter key to search
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                performSearch();
+            }
+        });
+
+        // Filter chips functionality
+        const filterChips = document.querySelectorAll('.filter-chip');
+        filterChips.forEach(chip => {
+            chip.addEventListener('click', function() {
+                filterChips.forEach(c => c.classList.remove('active'));
+                this.classList.add('active');
+                // In a real app, this would filter results by type
+                console.log(`Filtering by: ${this.textContent}`);
+            });
+        });
+    });
+</script>
+
+</body>
+</html>

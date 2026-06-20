@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>planHub - 智能协作管理平台</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #f8fafc;
+            --accent: #0ea5e9;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --sidebar-bg: #1e293b;
+            --card-bg: white;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--secondary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .dashboard-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            color: white;
+            padding: 24px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .logo {
+            padding: 0 24px 32px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .logo h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+        }
+
+        .nav-menu {
+            padding: 24px 0;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 3px solid transparent;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            background: rgba(255,255,255,0.1);
+            border-left-color: var(--primary);
+        }
+
+        .nav-item i {
+            width: 20px;
+            text-align: center;
+        }
+
+        .user-profile {
+            padding: 24px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: auto;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 280px;
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .search-bar {
+            display: flex;
+            gap: 12px;
+            max-width: 400px;
+        }
+
+        .search-input {
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            width: 100%;
+            font-size: 1rem;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        /* Dashboard Grid */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px var(--shadow);
+            border: 1px solid var(--border);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            border: none;
+            background: var(--secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+
+        .btn-icon:hover {
+            background: var(--border);
+        }
+
+        /* Progress Ring */
+        .progress-ring {
+            position: relative;
+            width: 80px;
+            height: 80px;
+        }
+
+        .progress-ring-circle {
+            stroke: var(--primary);
+            fill: transparent;
+            stroke-width: 6;
+            stroke-linecap: round;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+        }
+
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        /* Plans List */
+        .plans-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .plan-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            background: var(--secondary);
+            border-radius: 12px;
+            transition: all 0.3s ease;
+        }
+
+        .plan-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px var(--shadow);
+        }
+
+        .plan-info h4 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .plan-info p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .plan-status {
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .status-active {
+            background: var(--success);
+            color: white;
+        }
+
+        .status-pending {
+            background: var(--warning);
+            color: white;
+        }
+
+        /* Community Feed */
+        .community-feed {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .post-card {
+            background: var(--secondary);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .post-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .post-user {
+            font-weight: 600;
+        }
+
+        .post-time {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .post-content {
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+
+        .post-actions {
+            display: flex;
+            gap: 16px;
+        }
+
+        .action-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: color 0.3s ease;
+        }
+
+        .action-btn:hover {
+            color: var(--primary);
+        }
+
+        /* Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+        }
+
+        .modal-content {
+            background: white;
+            margin: 5% auto;
+            padding: 32px;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 500px;
+            position: relative;
+        }
+
+        .close {
+            position: absolute;
+            right: 20px;
+            top: 20px;
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+        }
+
+        .form-textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 240px;
+            }
+            .main-content {
+                margin-left: 240px;
+                padding: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-container">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="logo">
+            <h1>planHub</h1>
+        </div>
+
+        <nav class="nav-menu">
+            <div class="nav-item active">
+                <i class="fas fa-home"></i>
+                <span>首页</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-calendar-check"></i>
+                <span>我的计划</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-users"></i>
+                <span>社区</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-search"></i>
+                <span>搜索</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-user-circle"></i>
+                <span>个人中心</span>
+            </div>
+        </nav>
+
+        <div class="user-profile">
+            <div class="user-info">
+                <div class="avatar">张</div>
+                <div>
+                    <div style="font-weight: 600;">张三</div>
+                    <div style="color: #94a3b8; font-size: 0.9rem;">zhang@example.com</div>
+                </div>
+            </div>
+            <button class="btn" style="margin-top: 16px; background: transparent; border: 2px solid rgba(255,255,255,0.2); color: white; width: 100%; padding: 10px;">
+                <i class="fas fa-sign-out-alt"></i>
+                退出登录
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="header">
+            <h1 class="page-title">欢迎回来，张三！</h1>
+            <div class="search-bar">
+                <input type="text" class="search-input" placeholder="搜索用户、计划...">
+                <button class="btn btn-primary">
+                    <i class="fas fa-search"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Dashboard Grid -->
+        <div class="dashboard-grid">
+            <!-- Plan Progress Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">本周计划进度</h3>
+                    <div class="card-actions">
+                        <button class="btn-icon">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 24px;">
+                    <div class="progress-ring">
+                        <svg width="80" height="80">
+                            <circle cx="40" cy="40" r="34" fill="none" stroke="#e2e8f0" stroke-width="6"/>
+                            <circle id="progressCircle" class="progress-ring-circle" cx="40" cy="40" r="34"
+                                    stroke="var(--primary)" stroke-width="6" stroke-dasharray="213.6" stroke-dashoffset="106.8"/>
+                        </svg>
+                        <div class="progress-text">60%</div>
+                    </div>
+                    <div>
+                        <p style="color: var(--text-secondary); margin-bottom: 8px;">已完成 3/5 个计划</p>
+                        <p style="font-size: 0.9rem; color: var(--text-secondary);">
+                            继续加油！还有 2 个计划待完成
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">快速操作</h3>
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <button class="btn btn-primary" onclick="openModal('newPlan')">
+                        <i class="fas fa-plus" style="margin-right: 8px;"></i>
+                        创建新计划
+                    </button>
+                    <button class="btn" style="background: var(--secondary); border: 2px solid var(--border);">
+                        <i class="fas fa-trophy" style="margin-right: 8px;"></i>
+                        查看成就
+                    </button>
+                    <button class="btn" style="background: var(--secondary); border: 2px solid var(--border);">
+                        <i class="fas fa-chart-line" style="margin-right: 8px;"></i>
+                        数据统计
+                    </button>
+                </div>
+            </div>
+
+            <!-- Recent Plans -->
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">最近计划</h3>
+                    <div class="card-actions">
+                        <button class="btn-icon">
+                            <i class="fas fa-plus"></i>
+                        </button>
+                        <button class="btn-icon">
+                            <i class="fas fa-filter"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="plans-list">
+                    <div class="plan-item">
+                        <div class="plan-info">
+                            <h4>学习 React 高级特性</h4>
+                            <p>截止日期：2024年1月15日</p>
+                        </div>
+                        <span class="plan-status status-active">进行中</span>
+                    </div>
+                    <div class="plan-item">
+                        <div class="plan-info">
+                            <h4>准备技术分享会</h4>
+                            <p>截止日期：2024年1月20日</p>
+                        </div>
+                        <span class="plan-status status-pending">待开始</span>
+                    </div>
+                    <div class="plan-item">
+                        <div class="plan-info">
+                            <h4>健身打卡 30 天</h4>
+                            <p>截止日期：2024年2月1日</p>
+                        </div>
+                        <span class="plan-status status-active">进行中</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Community Activity -->
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">社区动态</h3>
+                    <div class="card-actions">
+                        <button class="btn-icon">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="community-feed">
+                    <div class="post-card">
+                        <div class="post-header">
+                            <strong class="post-user">李四</strong>
+                            <span class="post-time">2小时前</span>
+                        </div>
+                        <div class="post-content">
+                            刚刚完成了本周的学习计划！分享一下我的学习心得...
+                        </div>
+                        <div class="post-actions">
+                            <div class="action-btn">
+                                <i class="fas fa-heart"></i>
+                                <span>点赞</span>
+                            </div>
+                            <div class="action-btn">
+                                <i class="fas fa-comment"></i>
+                                <span>评论</span>
+                            </div>
+                            <div class="action-btn">
+                                <i class="fas fa-share"></i>
+                                <span>分享</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- New Plan Modal -->
+<div id="newPlanModal" class="modal">
+    <div class="modal-content">
+        <span class="close" onclick="closeModal('newPlan')">&times;</span>
+        <h2 style="margin-bottom: 24px;">创建新计划</h2>
+        <form>
+            <div class="form-group">
+                <label class="form-label">计划标题</label>
+                <input type="text" class="form-input" placeholder="输入计划标题">
+            </div>
+            <div class="form-group">
+                <label class="form-label">描述</label>
+                <textarea class="form-textarea" placeholder="详细描述你的计划..."></textarea>
+            </div>
+            <div class="form-group">
+                <label class="form-label">截止日期</label>
+                <input type="date" class="form-input">
+            </div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                <button type="button" class="btn" onclick="closeModal('newPlan')" style="background: var(--secondary); border: 2px solid var(--border);">
+                    取消
+                </button>
+                <button type="submit" class="btn btn-primary">
+                    创建计划
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    // Modal functions
+    function openModal(type) {
+        document.getElementById(`${type}Modal`).style.display = 'block';
+        document.body.style.overflow = 'hidden';
+    }
+
+    function closeModal(type) {
+        document.getElementById(`${type}Modal`).style.display = 'none';
+        document.body.style.overflow = 'auto';
+    }
+
+    // Close modal when clicking outside
+    window.onclick = function(event) {
+        if (event.target.className === 'modal') {
+            event.target.style.display = 'none';
+            document.body.style.overflow = 'auto';
+        }
+    }
+
+    // Progress ring animation
+    document.addEventListener('DOMContentLoaded', function() {
+        const progressCircle = document.getElementById('progressCircle');
+        const radius = 34;
+        const circumference = 2 * Math.PI * radius;
+        progressCircle.style.strokeDasharray = circumference;
+        progressCircle.style.strokeDashoffset = circumference - (circumference * 0.6);
+
+        // Add hover effect to plan items
+        document.querySelectorAll('.plan-item').forEach(item => {
+            item.addEventListener('mouseenter', () => {
+                item.style.transform = 'translateY(-2px)';
+                item.style.boxShadow = '0 4px 12px var(--shadow)';
+            });
+
+            item.addEventListener('mouseleave', () => {
+                item.style.transform = 'translateY(0)';
+                item.style.boxShadow = 'none';
+            });
+        });
+    });
+
+    // Search functionality
+    document.querySelector('.search-input').addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+            alert('搜索功能演示 - 实际应用中会连接到后端API');
+        }
+    });
+</script>
+
+</body>
+</html>
