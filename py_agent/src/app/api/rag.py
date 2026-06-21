@@ -86,31 +86,48 @@ class DocumentUploadResponse(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. 全局状态
+# 2. 全局状态（按用户ID隔离）
 # ══════════════════════════════════════════════════════════════════════════════
 
 vector_store = None
 qa_chain = None
 
 # 原始文档索引（用于 BM25 关键词检索、文档元数据查询）
+# 按用户ID分区存储，确保用户之间数据隔离
 # {
-#   "doc_id": {
-#     "filename": str,
-#     "chunks": [{"content": str, "chunk_index": int, "total_chunks": int}, ...],
-#     "upload_time": str,
-#     "content": str  # 完整原文（供列表/预览）
+#   "user_id": {
+#     "doc_id": {
+#       "filename": str,
+#       "chunks": [{"content": str, "chunk_index": int, "total_chunks": int}, ...],
+#       "upload_time": str,
+#       "content": str  # 完整原文（供列表/预览）
+#     }
 #   }
 # }
-original_documents = {}
+user_documents = {}  # {user_id: {doc_id: doc_info}}
 
 # BM25 词频表（用于关键词检索）
-# {doc_chunk_key: {"filename": str, "doc_id": str, "tf": {word: count}, "length": int, "content": str}}
-bm25_index = {}
+# 按用户ID分区存储
+# {
+#   "user_id": {
+#     "doc_chunk_key": {"filename": str, "doc_id": str, "tf": {word: count}, "length": int, "content": str}
+#   }
+# }
+user_bm25_index = {}   # {user_id: {chunk_key: bm25_info}}
+user_bm25_stats = {}   # {user_id: {"total_docs": int, "avg_length": float}}
+
+# 保留旧变量名兼容（指向默认用户的索引，避免其他模块报错）
+original_documents = user_documents.setdefault("default", {})
+bm25_index = user_bm25_index.setdefault("default", {})
 bm25_total_docs = 0
 bm25_avg_length = 0.0
 
 # BM25 持久化路径
 BM25_PERSIST_PATH = "./bm25_index.pkl"
+
+# 当前登录用户的文档目录（按用户ID隔离）
+# 格式: ./original_docs/{user_id}/
+CURRENT_USER_DOCS_DIR = "./original_docs/default"
 
 
 def save_bm25_to_disk():
@@ -152,28 +169,55 @@ def load_bm25_from_disk() -> bool:
 # 3. 初始化
 # ══════════════════════════════════════════════════════════════════════════════
 
-def init_vector_store():
-    """初始化向量存储"""
+def init_vector_store(user_id: str = "default"):
+    """
+    初始化向量存储（按用户ID隔离）
+
+    Args:
+        user_id: 用户ID，每个用户有独立的向量库子目录
+    """
     global vector_store
-    db_path = settings.CHROMA_DB_PATH
+    db_path = os.path.join(settings.CHROMA_DB_PATH, user_id)
+    os.makedirs(db_path, exist_ok=True)
     embeddings = get_embeddings()
     try:
         vector_store = Chroma(persist_directory=db_path, embedding_function=embeddings)
+        print(f"[INFO] 向量库已初始化: user_id={user_id}, path={db_path}")
     except Exception:
         vector_store = Chroma(persist_directory=db_path, embedding_function=embeddings)
-        # langchain_chroma 自动持久化，无需手动调用
+        print(f"[INFO] 向量库已初始化（降级）: user_id={user_id}, path={db_path}")
 
 
-def init_document_indices():
-    """从 ./original_docs 磁盘目录重建 original_documents 和 bm25 索引
+def init_document_indices(user_id: str = "default"):
+    """
+    从 ./original_docs/{user_id}/ 磁盘目录重建文档索引
 
     每次 Python 服务重启都会调用，确保重启后：
     - 指定文档查询（doc_ids）可用
     - BM25 关键词检索可用
     - 文档列表/预览接口始终有内容
+
+    Args:
+        user_id: 用户ID，每个用户有独立的文档目录
     """
-    global bm25_total_docs, bm25_avg_length
-    docs_dir = "./original_docs"
+    global original_documents, bm25_index, bm25_total_docs, bm25_avg_length
+
+    # 初始化该用户的索引空间
+    if user_id not in user_documents:
+        user_documents[user_id] = {}
+    if user_id not in user_bm25_index:
+        user_bm25_index[user_id] = {}
+    if user_id not in user_bm25_stats:
+        user_bm25_stats[user_id] = {"total_docs": 0, "avg_length": 0.0}
+
+    # 设置当前用户的索引引用
+    original_documents = user_documents[user_id]
+    bm25_index = user_bm25_index[user_id]
+    bm25_stats = user_bm25_stats[user_id]
+    bm25_total_docs = bm25_stats["total_docs"]
+    bm25_avg_length = bm25_stats["avg_length"]
+
+    docs_dir = os.path.join("./original_docs", user_id)
     if not os.path.exists(docs_dir):
         os.makedirs(docs_dir, exist_ok=True)
         return 0
@@ -205,7 +249,7 @@ def init_document_indices():
             if not split_docs:
                 continue
             for i, d in enumerate(split_docs):
-                add_doc_to_bm25(doc_id, filename_in_doc, i, d.page_content)
+                add_doc_to_bm25(doc_id, filename_in_doc, i, d.page_content, user_id=user_id)
             chunks_meta = [{"content": d.page_content, "chunk_index": i, "total_chunks": len(split_docs)} for i, d in enumerate(split_docs)]
             original_documents[doc_id] = {
                 "filename": filename_in_doc,
@@ -216,7 +260,13 @@ def init_document_indices():
             loaded += 1
         except Exception as e:
             print(f"[WARN] 重建索引时读取文档 {filename} 失败: {e}")
-    print(f"[INFO] 文档索引重建完成，共 {loaded} 个文档，BM25 片段数: {bm25_total_docs}")
+
+    # 更新统计
+    bm25_stats["total_docs"] = len(bm25_index)
+    bm25_stats["avg_length"] = bm25_avg_length
+    bm25_total_docs = bm25_stats["total_docs"]
+
+    print(f"[INFO] 文档索引重建完成: user_id={user_id}, 共 {loaded} 个文档, BM25 片段数: {bm25_total_docs}")
     return loaded
 
 
@@ -272,12 +322,26 @@ def compute_bm25_tf(content: str) -> dict:
     return tf, len(tokens)
 
 
-def add_doc_to_bm25(doc_id: str, filename: str, chunk_index: int, content: str):
-    """将文档块加入 BM25 索引（同时写 MySQL）"""
-    global bm25_total_docs, bm25_avg_length
+def add_doc_to_bm25(doc_id: str, filename: str, chunk_index: int, content: str, user_id: str = "default"):
+    """
+    将文档块加入 BM25 索引（同时写 MySQL）
+
+    Args:
+        doc_id: 文档ID
+        filename: 文件名
+        chunk_index: 块索引
+        content: 文档内容
+        user_id: 用户ID（用于隔离不同用户的 BM25 索引）
+    """
+    # 确保该用户的 BM25 索引存在
+    if user_id not in user_bm25_index:
+        user_bm25_index[user_id] = {}
+    if user_id not in user_bm25_stats:
+        user_bm25_stats[user_id] = {"total_docs": 0, "avg_length": 0.0}
+
     tf, length = compute_bm25_tf(content)
     key = f"{doc_id}__{chunk_index}"
-    bm25_index[key] = {
+    user_bm25_index[user_id][key] = {
         "filename": filename,
         "doc_id": doc_id,
         "chunk_index": chunk_index,
@@ -285,13 +349,21 @@ def add_doc_to_bm25(doc_id: str, filename: str, chunk_index: int, content: str):
         "length": length,
         "content": content,
     }
-    # 增量更新 avg_length（使用简单平均）
-    total_old = bm25_avg_length * bm25_total_docs
-    bm25_total_docs += 1
-    bm25_avg_length = (total_old + length) / bm25_total_docs
+
+    # 增量更新该用户的 avg_length
+    stats = user_bm25_stats[user_id]
+    total_old = stats["avg_length"] * stats["total_docs"]
+    stats["total_docs"] += 1
+    stats["avg_length"] = (total_old + length) / stats["total_docs"]
+
+    # 同步更新全局变量（兼容旧代码）
+    global bm25_total_docs, bm25_avg_length, bm25_index
+    bm25_index = user_bm25_index[user_id]
+    bm25_total_docs = stats["total_docs"]
+    bm25_avg_length = stats["avg_length"]
 
     # 持久化到 MySQL（异步批量写，不阻塞主流程）
-    _persist_bm25_to_mysql(doc_id, chunk_index, tf, length, content, filename)
+    _persist_bm25_to_mysql(doc_id, chunk_index, tf, length, content, filename, user_id=user_id)
 
 
 def _persist_bm25_to_mysql(doc_id: str, chunk_index: int, tf: dict,
@@ -390,16 +462,29 @@ def _record_documents_to_mysql(doc_records: list):
         print(f"[ERROR] _record_documents_to_mysql failed: {e}")
 
 
-def bm25_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None) -> List[Document]:
-    """BM25 关键词检索
+def bm25_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None, user_id: str = "default") -> List[Document]:
+    """
+    BM25 关键词检索（按用户ID隔离）
 
     BM25 分数公式：
         score(d, q) = Σ for term t in q:
             idf(t) * (tf(t, d) * (k1 + 1)) / (tf(t, d) + k1 * (1 - b + b * |d| / avgdl))
 
-    Returns: 按得分排序的 top_n Document 列表（Document.page_content=片段内容，metadata=元数据）
+    Args:
+        query: 查询文本
+        top_n: 返回文档数
+        doc_ids: 指定文档ID列表
+        user_id: 用户ID（用于隔离不同用户的 BM25 索引）
+
+    Returns: 按得分排序的 top_n Document 列表
     """
-    if not bm25_index or bm25_total_docs == 0:
+    # 获取该用户的 BM25 索引
+    user_index = user_bm25_index.get(user_id, {})
+    stats = user_bm25_stats.get(user_id, {"total_docs": 0, "avg_length": 0.0})
+    total_docs = stats["total_docs"]
+    avg_length = stats["avg_length"]
+
+    if not user_index or total_docs == 0:
         return []
 
     q_tokens = tokenize(query)
@@ -410,22 +495,22 @@ def bm25_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None
     candidate_keys = []
     if doc_ids:
         doc_ids_str = set(str(d) for d in doc_ids)
-        for key, info in bm25_index.items():
+        for key, info in user_index.items():
             if info["doc_id"] in doc_ids_str:
                 candidate_keys.append(key)
     else:
-        candidate_keys = list(bm25_index.keys())
+        candidate_keys = list(user_index.keys())
 
     if not candidate_keys:
         return []
 
     # 计算每个候选的 BM25 分数
     scored = []
-    total_docs_for_idf = max(bm25_total_docs, 1)
-    avg_length = max(bm25_avg_length, 1.0)
+    total_docs_for_idf = max(total_docs, 1)
+    avg_length = max(avg_length, 1.0)
 
     for key in candidate_keys:
-        info = bm25_index[key]
+        info = user_index[key]
         doc_length = info["length"] or 1
         tf_map = info["tf"]
         score = 0.0
@@ -434,7 +519,7 @@ def bm25_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None
             if tf == 0:
                 continue
             # IDF：包含该词的文档数占比的对数
-            doc_freq = sum(1 for k in candidate_keys if t in bm25_index[k]["tf"])
+            doc_freq = sum(1 for k in candidate_keys if t in user_index[k]["tf"])
             if doc_freq == 0:
                 continue
             idf = math.log((total_docs_for_idf - doc_freq + 0.5) / (doc_freq + 0.5) + 1.0)
@@ -513,12 +598,20 @@ def generate_hypothetical_document(question: str, llm=None) -> str:
         return ""
 
 
-def vector_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None) -> List[Document]:
-    """向量相似度检索（从 Chroma 中取）"""
-    if vector_store is None:
-        init_vector_store()
+def vector_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None, user_id: str = "default") -> List[Document]:
+    """
+    向量相似度检索（从 Chroma 中取，按用户ID隔离）
 
-    print(f"[DEBUG] vector_search called with query: {query[:100]}..., top_n: {top_n}, doc_ids: {doc_ids}")
+    Args:
+        query: 查询文本
+        top_n: 返回文档数
+        doc_ids: 指定文档ID列表
+        user_id: 用户ID（用于隔离不同用户的向量库）
+    """
+    # 按用户ID初始化向量库
+    init_vector_store(user_id)
+
+    print(f"[DEBUG] vector_search called: user_id={user_id}, query: {query[:100]}..., top_n: {top_n}, doc_ids: {doc_ids}")
 
     # 使用 Chroma 内置检索（支持 filter by doc_id）
     try:
@@ -559,27 +652,47 @@ def vector_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = No
 
 
 def hybrid_search(query: str, top_k: int = 3, fetch_k: int = 20,
-                  doc_ids: Optional[List[str]] = None) -> (List[Document], dict):
+                  doc_ids: Optional[List[str]] = None, user_id: str = "default") -> (List[Document], dict):
     """
-    混合检索：
+    混合检索（按用户ID隔离）：
       1. 向量相似度检索 → 取 fetch_k 个
       2. BM25 关键词检索 → 取 fetch_k 个
       3. 两者合并（去重）→ 归一化分数 → 取前 top_k
 
+    Args:
+        query: 查询文本
+        top_k: 最终返回文档数
+        fetch_k: 粗检索候选数
+        doc_ids: 指定文档ID列表
+        user_id: 用户ID（用于隔离不同用户的知识库）
+
     返回: (最终文档列表, 检索调试信息)
     """
+    # 确保该用户的索引已初始化
+    if user_id not in user_bm25_index:
+        user_bm25_index[user_id] = {}
+    if user_id not in user_bm25_stats:
+        user_bm25_stats[user_id] = {"total_docs": 0, "avg_length": 0.0}
+
+    # 设置当前用户的 BM25 索引
+    global bm25_index, bm25_total_docs, bm25_avg_length
+    bm25_index = user_bm25_index[user_id]
+    bm25_total_docs = user_bm25_stats[user_id]["total_docs"]
+    bm25_avg_length = user_bm25_stats[user_id]["avg_length"]
+
     retrieval_info = {
         "vector_count": 0,
         "bm25_count": 0,
         "merged_count": 0,
+        "user_id": user_id,
     }
 
-    # 1. 向量检索
-    v_docs = vector_search(query, top_n=fetch_k, doc_ids=doc_ids)
+    # 1. 向量检索（按用户ID隔离）
+    v_docs = vector_search(query, top_n=fetch_k, doc_ids=doc_ids, user_id=user_id)
     retrieval_info["vector_count"] = len(v_docs)
 
-    # 2. BM25 关键词检索
-    k_docs = bm25_search(query, top_n=fetch_k, doc_ids=doc_ids)
+    # 2. BM25 关键词检索（按用户ID隔离）
+    k_docs = bm25_search(query, top_n=fetch_k, doc_ids=doc_ids, user_id=user_id)
     retrieval_info["bm25_count"] = len(k_docs)
 
     # 3. 合并（按 doc_id+content 去重），取并集
@@ -813,7 +926,7 @@ def compress_context(question: str, docs: List[Document], min_sentences: int = 3
 @router.post("/query", response_model=RAGQueryResponse)
 async def query_rag(request: RAGQueryRequest):
     """
-    RAG 问答接口（增强版）
+    RAG 问答接口（增强版，按用户ID隔离）
 
     流程:
       1. 混合检索（向量 + BM25 关键词）→ 得到 fetch_k 个候选
@@ -821,16 +934,24 @@ async def query_rag(request: RAGQueryRequest):
       3. 可选: 上下文压缩 → 只保留相关句子，降低 token 消耗
       4. 拼接系统提示（含文档上下文）+ 历史对话 + 当前问题
       5. 调用 LLM 生成回答
-    """
-    try:
-        if vector_store is None:
-            init_vector_store()
 
-        # 检查向量库大小
+    安全说明：
+      - 所有检索都按 user_id 隔离，用户只能访问自己的知识库
+      - request.user_id 由 Java 后端校验后传入，不可伪造
+    """
+    # 获取用户ID（由 Java 后端鉴权后传入）
+    user_id = request.user_id or "default"
+
+    try:
+        # 按用户ID初始化向量库
+        if vector_store is None:
+            init_vector_store(user_id)
+
+        # 检查该用户的向量库大小
         try:
             collection = vector_store._collection
             doc_count = collection.count()
-            print(f"[DEBUG] 向量数据库文档数: {doc_count}")
+            print(f"[DEBUG] 向量数据库文档数: user_id={user_id}, count={doc_count}")
         except Exception:
             doc_count = 0
 
@@ -857,12 +978,13 @@ async def query_rag(request: RAGQueryRequest):
         else:
             query_for_search = question
 
-        # --- 步骤 1: 混合检索 ---
+        # --- 步骤 1: 混合检索（按用户ID隔离） ---
         retrieved_docs, retrieval_info = hybrid_search(
             query_for_search,
             top_k=request.top_k,
             fetch_k=request.fetch_k,
             doc_ids=request.doc_ids,
+            user_id=user_id,
         )
         retrieval_info["hyde_used"] = bool(hyde_text)
         retrieval_info["hyde_length"] = len(hyde_text)
@@ -1074,7 +1196,7 @@ Step 5: 如果有信息 → 用自然语言综合要点，给出最终回答；�
 
 async def query_rag_internal(
     question: str,
-    user_id: str = "1",
+    user_id: str = "default",
     session_id: str = None,
     doc_ids: list = None,
     top_k: int = 3,
@@ -1082,7 +1204,16 @@ async def query_rag_internal(
     use_compression: bool = False
 ) -> Optional[dict]:
     """
-    内部 RAG 查询接口（供计划生成接口调用）
+    内部 RAG 查询接口（供计划生成接口调用，按用户ID隔离）
+
+    Args:
+        question: 用户问题
+        user_id: 用户ID（用于隔离不同用户的知识库）
+        session_id: 会话ID
+        doc_ids: 指定文档ID列表
+        top_k: 返回文档数
+        use_rerank: 是否启用 LLM 重排序
+        use_compression: 是否启用上下文压缩
 
     Returns:
         {"answer": "...", "sources": [...]} 或 None
@@ -1121,15 +1252,19 @@ async def query_rag_internal(
 
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(file: UploadFile = File(...)):
-    return await process_uploaded_files([file])
+    # TODO: 从请求中获取 user_id（需配合 Java 后端传入）
+    user_id = "default"
+    return await process_uploaded_files([file], user_id=user_id)
 
 
 @router.post("/upload/batch", response_model=DocumentUploadResponse)
 async def upload_documents_batch(files: list[UploadFile] = File(...)):
-    return await process_uploaded_files(files)
+    # TODO: 从请求中获取 user_id（需配合 Java 后端传入）
+    user_id = "default"
+    return await process_uploaded_files(files, user_id=user_id)
 
 
-async def process_uploaded_files(files: list[UploadFile]) -> DocumentUploadResponse:
+async def process_uploaded_files(files: list[UploadFile], user_id: str = "default") -> DocumentUploadResponse:
     try:
         allowed_extensions = [".txt", ".md", ".json", ".csv", ".pdf", ".docx", ".doc",
                               ".xlsx", ".xls", ".pptx", ".ppt"]
@@ -1239,17 +1374,18 @@ async def process_uploaded_files(files: list[UploadFile]) -> DocumentUploadRespo
                     "content": original_content,
                 }
 
-                # BM25 索引（用于关键词检索）
+                # BM25 索引（用于关键词检索，按用户ID隔离）
                 for i, d in enumerate(split_docs):
-                    add_doc_to_bm25(doc_id, file.filename, i, d.page_content)
+                    add_doc_to_bm25(doc_id, file.filename, i, d.page_content, user_id=user_id)
                     # 给每个文档块补充元数据到 Chroma
                     d.metadata["doc_id"] = doc_id
                     d.metadata["doc_name"] = file.filename
                     d.metadata["chunk_index"] = i
                     d.metadata["total_chunks"] = len(split_docs)
+                    d.metadata["user_id"] = user_id  # 记录所属用户
 
-                # 磁盘保存（供 /documents 列表和重新索引）
-                docs_dir = "./original_docs"
+                # 磁盘保存（按用户ID隔离目录）
+                docs_dir = os.path.join("./original_docs", user_id)
                 os.makedirs(docs_dir, exist_ok=True)
                 doc_file = os.path.join(docs_dir, f"{doc_id}.txt")
                 with open(doc_file, "w", encoding="utf-8") as f:
@@ -1357,17 +1493,32 @@ async def get_stats():
 
 
 @router.delete("/clear")
-async def clear_knowledge_base():
+async def clear_knowledge_base(user_id: str = "default"):
+    """
+    清空指定用户的知识库（按用户ID隔离）
+
+    Args:
+        user_id: 用户ID，只清空该用户的知识库
+    """
     try:
         global vector_store
-        db_path = settings.CHROMA_DB_PATH
+        # 清空该用户的向量库
+        db_path = os.path.join(settings.CHROMA_DB_PATH, user_id)
         if os.path.exists(db_path):
             shutil.rmtree(db_path)
         vector_store = None
-        # 清空 BM25 和 内存索引
-        bm25_index.clear()
-        original_documents.clear()
-        return {"success": True, "message": "知识库已清空"}
+
+        # 清空该用户的 BM25 索引
+        if user_id in user_bm25_index:
+            user_bm25_index[user_id].clear()
+        if user_id in user_bm25_stats:
+            user_bm25_stats[user_id] = {"total_docs": 0, "avg_length": 0.0}
+
+        # 清空该用户的内存索引
+        if user_id in user_documents:
+            user_documents[user_id].clear()
+
+        return {"success": True, "message": f"用户 {user_id} 的知识库已清空"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1470,10 +1621,15 @@ async def internal_get_document(doc_id: str):
 
 
 @router.get("/documents")
-async def get_documents():
-    """获取文档列表"""
+async def get_documents(user_id: str = "default"):
+    """
+    获取当前用户的文档列表（按用户ID隔离）
+
+    Args:
+        user_id: 用户ID，只返回该用户的文档
+    """
     try:
-        docs_dir = "./original_docs"
+        docs_dir = os.path.join("./original_docs", user_id)
         os.makedirs(docs_dir, exist_ok=True)
         documents = []
         for filename in os.listdir(docs_dir):
@@ -1493,41 +1649,52 @@ async def get_documents():
                             "content": preview,
                             "full_content": actual_content,
                             "length": len(actual_content),
+                            "user_id": user_id,
                         })
                 except Exception as e:
                     print(f"[WARN] 读取文档 {filename} 失败: {e}")
         documents.sort(key=lambda x: x.get("name", ""), reverse=True)
-        return {"documents": documents, "total": len(documents)}
+        return {"documents": documents, "total": len(documents), "user_id": user_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/documents/{doc_id}")
-async def delete_document(doc_id: str):
+async def delete_document(doc_id: str, user_id: str = "default"):
+    """
+    删除指定用户的文档（按用户ID隔离）
+
+    Args:
+        doc_id: 文档ID
+        user_id: 用户ID，只删除该用户拥有的文档
+    """
     try:
-        global bm25_total_docs, bm25_avg_length
-        docs_dir = "./original_docs"
+        # 获取该用户的索引
+        user_index = user_bm25_index.get(user_id, {})
+        user_docs = user_documents.get(user_id, {})
+        stats = user_bm25_stats.get(user_id, {"total_docs": 0, "avg_length": 0.0})
+
+        docs_dir = os.path.join("./original_docs", user_id)
         doc_path = os.path.join(docs_dir, f"{doc_id}.txt")
 
         deleted_from_chroma = 0
         deleted_from_bm25 = 0
         deleted_from_disk = False
 
-        # 1. 删 Chroma 向量数据库（关键修复：按 doc_id 精确删除，避免幽灵数据）
+        # 1. 删 Chroma 向量数据库（按 doc_id 精确删除，且确保 user_id 匹配）
         if vector_store is not None:
             try:
-                # Chroma 支持按 metadata 过滤删除
-                vector_store.delete(where={"doc_id": str(doc_id)})
-                # Chroma 没有直接返回删除数量，但操作是原子的
-                print(f"[INFO] Chroma 已删除 doc_id={doc_id} 的所有片段")
+                # 同时过滤 doc_id 和 user_id，防止误删其他用户文档
+                vector_store.delete(where={"doc_id": str(doc_id), "user_id": user_id})
+                print(f"[INFO] Chroma 已删除 doc_id={doc_id}, user_id={user_id} 的所有片段")
                 deleted_from_chroma = 1  # 标记执行成功
             except Exception as e:
                 # 部分版本 Chroma 可能不支持 delete 语法，回退到按 ID 删
                 print(f"[WARN] Chroma 按 doc_id 删除失败，尝试按 ID 删除: {e}")
                 try:
-                    # 获取该 doc_id 下的所有片段 ID
+                    # 获取该 doc_id 下的所有片段 ID（同时校验 user_id）
                     collection = vector_store._collection
-                    results = collection.get(where={"doc_id": str(doc_id)})
+                    results = collection.get(where={"doc_id": str(doc_id), "user_id": user_id})
                     if results and results.get("ids"):
                         collection.delete(ids=results["ids"])
                         deleted_from_chroma = len(results["ids"])
@@ -1535,25 +1702,32 @@ async def delete_document(doc_id: str):
                 except Exception as e2:
                     print(f"[ERROR] Chroma 删除失败: {e2}")
 
-        # 2. 删 BM25 内存索引
-        keys_to_del = [k for k in bm25_index if k.startswith(doc_id + "__")]
+        # 2. 删该用户的 BM25 内存索引
+        keys_to_del = [k for k in user_index if k.startswith(doc_id + "__")]
         for k in keys_to_del:
-            del bm25_index[k]
+            del user_index[k]
         deleted_from_bm25 = len(keys_to_del)
-        bm25_total_docs = max(bm25_total_docs - deleted_from_bm25, 0)
-        if bm25_total_docs == 0:
-            bm25_avg_length = 0.0
+        stats["total_docs"] = max(stats["total_docs"] - deleted_from_bm25, 0)
+        if stats["total_docs"] == 0:
+            stats["avg_length"] = 0.0
+
+        # 同步更新全局变量（兼容旧代码）
+        global bm25_total_docs, bm25_avg_length, bm25_index, original_documents
+        bm25_index = user_index
+        bm25_total_docs = stats["total_docs"]
+        bm25_avg_length = stats["avg_length"]
+        original_documents = user_docs
 
         # 3. 删磁盘文件（可选，允许不存在）
         if os.path.exists(doc_path):
             os.remove(doc_path)
             deleted_from_disk = True
 
-        # 4. 删内存 original_documents
-        if doc_id in original_documents:
-            del original_documents[doc_id]
+        # 4. 删内存 user_documents
+        if doc_id in user_docs:
+            del user_docs[doc_id]
 
-        print(f"[INFO] 删除文档 {doc_id} 完成: "
+        print(f"[INFO] 删除文档 {doc_id} 完成: user_id={user_id}, "
               f"Chroma={deleted_from_chroma}, BM25={deleted_from_bm25}, 磁盘={deleted_from_disk}")
 
         return {

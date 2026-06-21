@@ -25,8 +25,8 @@ class Settings(BaseSettings):
 
     # 本地 Ollama（对话机器人 & RAG 默认使用此模型）
     OLLAMA_API_URL: str = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "deepseek-r1:7b")
-    OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "bge-m3")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
+    OLLAMA_EMBEDDING_MODEL: str = os.getenv("OLLAMA_EMBEDDING_MODEL", "nomic-embed-text")
 
     # ── 服务配置 ─────────────────────────────────────────────
     HOST: str = os.getenv("AI_HOST", "127.0.0.1")  # 只监听本地，防止外部直接访问
