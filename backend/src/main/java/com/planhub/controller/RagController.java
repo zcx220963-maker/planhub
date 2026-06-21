@@ -106,14 +106,14 @@ public class RagController {
             throw new BusinessException("无权删除此文档");
         }
 
-        // 2. 通知 Python 清理 Chroma（用 doc_id 精确删除）
+        // 2. 通知 Python 清理 Chroma（用 doc_id 精确删除，需传 user_id 确保删除正确的用户 collection）
         try {
-            String url = aiServiceConfig.getAiServiceUrl() + "/rag/internal/documents/" + docId;
+            String url = aiServiceConfig.getAiServiceUrl() + "/rag/internal/documents/" + docId + "?user_id=" + userId;
             HttpHeaders headers = new HttpHeaders();
             headers.set(aiServiceConfig.getInternalSecretHeader(), aiServiceConfig.getInternalSecret());
             HttpEntity<String> entity = new HttpEntity<>(headers);
             aiRestTemplate.exchange(url, HttpMethod.DELETE, entity, String.class);
-            log.info("[RAG Delete] 已通知 Python 清理 Chroma docId={}", docId);
+            log.info("[RAG Delete] 已通知 Python 清理 Chroma docId={}, userId={}", docId, userId);
         } catch (Exception e) {
             log.error("[RAG Delete] 通知 Python 失败，继续删除 MySQL", e);
         }

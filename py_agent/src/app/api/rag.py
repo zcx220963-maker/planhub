@@ -9,7 +9,7 @@ RAG 知识库路由（增强版）
 5. 元数据增强: 每个文档块保存文件名、块索引、总块数等信息
 """
 
-from fastapi import APIRouter, HTTPException, File, UploadFile
+from fastapi import APIRouter, HTTPException, File, UploadFile, Form
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from langchain_chroma import Chroma
@@ -57,7 +57,7 @@ class RAGQueryRequest(BaseModel):
     # 新增: 是否启用上下文压缩（精简上下文，降低 token 消耗）
     use_compression: bool = Field(default=True, description="是否启用上下文压缩")
     temperature: float = Field(default=0.3)
-    user_id: str = Field(default="1", description="用户ID")
+    user_id: str = Field(default="default", description="用户ID")
     session_id: Optional[str] = Field(default=None, description="会话ID")
     doc_ids: Optional[list] = Field(default=None, description="指定参与问答的文档ID列表，为空则使用所有文档")
 
@@ -86,48 +86,29 @@ class DocumentUploadResponse(BaseModel):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2. 全局状态（按用户ID隔离）
+# 2. 全局状态
 # ══════════════════════════════════════════════════════════════════════════════
 
-vector_store = None
-qa_chain = None
+# 用户集合缓存：每个用户有独立的 Chroma collection
+# {user_id: Chroma实例}
+user_vector_stores = {}
 
 # 原始文档索引（用于 BM25 关键词检索、文档元数据查询）
-# 按用户ID分区存储，确保用户之间数据隔离
-# {
-#   "user_id": {
-#     "doc_id": {
-#       "filename": str,
-#       "chunks": [{"content": str, "chunk_index": int, "total_chunks": int}, ...],
-#       "upload_time": str,
-#       "content": str  # 完整原文（供列表/预览）
-#     }
-#   }
-# }
-user_documents = {}  # {user_id: {doc_id: doc_info}}
+# 按用户ID分区存储 {user_id: {doc_id: doc_info}}
+user_documents = {}
 
-# BM25 词频表（用于关键词检索）
-# 按用户ID分区存储
-# {
-#   "user_id": {
-#     "doc_chunk_key": {"filename": str, "doc_id": str, "tf": {word: count}, "length": int, "content": str}
-#   }
-# }
-user_bm25_index = {}   # {user_id: {chunk_key: bm25_info}}
-user_bm25_stats = {}   # {user_id: {"total_docs": int, "avg_length": float}}
+# BM25 词频表（按用户ID分区）
+# {user_id: {chunk_key: bm25_info}}
+user_bm25_index = {}
+user_bm25_stats = {}  # {user_id: {"total_docs": int, "avg_length": float}}
 
-# 保留旧变量名兼容（指向默认用户的索引，避免其他模块报错）
-original_documents = user_documents.setdefault("default", {})
-bm25_index = user_bm25_index.setdefault("default", {})
+# 兼容旧代码
+original_documents = {}
+bm25_index = {}
 bm25_total_docs = 0
 bm25_avg_length = 0.0
 
-# BM25 持久化路径
 BM25_PERSIST_PATH = "./bm25_index.pkl"
-
-# 当前登录用户的文档目录（按用户ID隔离）
-# 格式: ./original_docs/{user_id}/
-CURRENT_USER_DOCS_DIR = "./original_docs/default"
 
 
 def save_bm25_to_disk():
@@ -169,23 +150,42 @@ def load_bm25_from_disk() -> bool:
 # 3. 初始化
 # ══════════════════════════════════════════════════════════════════════════════
 
-def init_vector_store(user_id: str = "default"):
+def get_or_create_user_vector_store(user_id: str):
     """
-    初始化向量存储（按用户ID隔离）
+    获取或创建该用户的独立 Chroma 向量库实例
 
-    Args:
-        user_id: 用户ID，每个用户有独立的向量库子目录
+    每个用户有独立的 collection，数据库层面完全隔离。
+    Chroma 支持多 collection 共享同一个 persist_directory，性能良好。
     """
-    global vector_store
-    db_path = os.path.join(settings.CHROMA_DB_PATH, user_id)
+    global user_vector_stores
+    if user_id in user_vector_stores:
+        return user_vector_stores[user_id]
+
+    db_path = settings.CHROMA_DB_PATH
     os.makedirs(db_path, exist_ok=True)
     embeddings = get_embeddings()
+
+    # 每个用户使用独立的 collection name
+    collection_name = f"user_{user_id}"
+
     try:
-        vector_store = Chroma(persist_directory=db_path, embedding_function=embeddings)
-        print(f"[INFO] 向量库已初始化: user_id={user_id}, path={db_path}")
-    except Exception:
-        vector_store = Chroma(persist_directory=db_path, embedding_function=embeddings)
-        print(f"[INFO] 向量库已初始化（降级）: user_id={user_id}, path={db_path}")
+        store = Chroma(
+            collection_name=collection_name,
+            persist_directory=db_path,
+            embedding_function=embeddings,
+        )
+        user_vector_stores[user_id] = store
+        print(f"[INFO] 向量库已创建: user_id={user_id}, collection={collection_name}")
+        return store
+    except Exception as e:
+        print(f"[WARN] 向量库创建失败，重试: {e}")
+        store = Chroma(
+            collection_name=collection_name,
+            persist_directory=db_path,
+            embedding_function=embeddings,
+        )
+        user_vector_stores[user_id] = store
+        return store
 
 
 def init_document_indices(user_id: str = "default"):
@@ -274,8 +274,8 @@ def init_qa_chain():
     """初始化问答链（备用，当前主要使用函数式调用）"""
     global qa_chain
     llm = get_llm(0.3)
-    if vector_store is None:
-        init_vector_store()
+    # 使用默认用户的向量库初始化 qa_chain
+    store = get_or_create_user_vector_store("default")
     from langchain_core.prompts import ChatPromptTemplate
     prompt = ChatPromptTemplate.from_messages([
         ("system", "你是一个知识库助手。请根据以下上下文回答用户的问题。\n\n上下文：\n{context}"),
@@ -284,7 +284,7 @@ def init_qa_chain():
     def format_docs(docs):
         return "\n\n".join([doc.page_content for doc in docs])
     qa_chain = (
-        {"context": vector_store.as_retriever(search_kwargs={"k": 3}) | format_docs,
+        {"context": store.as_retriever(search_kwargs={"k": 3}) | format_docs,
          "question": RunnablePassthrough()}
         | prompt | llm | StrOutputParser()
     )
@@ -367,11 +367,21 @@ def add_doc_to_bm25(doc_id: str, filename: str, chunk_index: int, content: str, 
 
 
 def _persist_bm25_to_mysql(doc_id: str, chunk_index: int, tf: dict,
-                           chunk_length: int, content: str, doc_name: str):
+                           chunk_length: int, content: str, doc_name: str,
+                           user_id: str = "default"):
     """
     把 BM25 倒排索引持久化到 MySQL
 
     调用 Java 端批量写入接口，把 (doc_id, chunk_index, term, tf) 写入 rag_bm25_index 表
+
+    Args:
+        doc_id: 文档ID
+        chunk_index: 块索引
+        tf: 词频表
+        chunk_length: 块长度
+        content: 文档内容
+        doc_name: 文档名
+        user_id: 用户ID（用于隔离不同用户的 BM25 索引）
     """
     try:
         import requests as req
@@ -382,7 +392,7 @@ def _persist_bm25_to_mysql(doc_id: str, chunk_index: int, tf: dict,
         if not secret:
             return
 
-        # 构建批量数据
+        # 构建批量数据（包含 user_id）
         items = []
         for term, freq in tf.items():
             items.append({
@@ -393,6 +403,7 @@ def _persist_bm25_to_mysql(doc_id: str, chunk_index: int, tf: dict,
                 "chunk_length": chunk_length,
                 "content": content[:500] if content else None,  # 截断避免过大
                 "doc_name": doc_name,
+                "user_id": user_id,
             })
 
         if not items:
@@ -420,12 +431,14 @@ def _persist_bm25_to_mysql(doc_id: str, chunk_index: int, tf: dict,
         pass
 
 
-def _record_documents_to_mysql(doc_records: list):
+def _record_documents_to_mysql(doc_records: list, user_id: str = "default"):
     """
     上传成功后，将文档元数据写入 MySQL
 
-    每个 doc_record 格式：
-        {"doc_id": "abc12345", "filename": "xxx.pdf", "chunk_count": 5}
+    Args:
+        doc_records: 文档记录列表
+            每个 doc_record 格式：{"doc_id": "abc12345", "filename": "xxx.pdf", "chunk_count": 5}
+        user_id: 用户ID（写入 rag_documents 表的 user_id 字段）
     """
     try:
         import requests as req
@@ -439,7 +452,7 @@ def _record_documents_to_mysql(doc_records: list):
         url = f"{settings.PLANHUB_API_BASE}/rag-v2/documents/record"
         headers = {
             "X-Internal-Api-Secret": secret,
-            "X-User-Id": "1",  # 默认用户，后续可从 JWT token 中提取
+            "X-User-Id": str(user_id),
             "Content-Type": "application/json",
         }
 
@@ -452,7 +465,7 @@ def _record_documents_to_mysql(doc_records: list):
                 }
                 resp = req.post(url, json=payload, headers=headers, timeout=5)
                 if resp.status_code == 200:
-                    print(f"[INFO] MySQL 记录文档成功: {record['filename']} -> {record['doc_id']}")
+                    print(f"[INFO] MySQL 记录文档成功: user_id={user_id}, {record['filename']} -> {record['doc_id']}")
                 else:
                     print(f"[WARN] MySQL 记录失败: {record['filename']}, status={resp.status_code}")
             except Exception as e:
@@ -600,50 +613,38 @@ def generate_hypothetical_document(question: str, llm=None) -> str:
 
 def vector_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None, user_id: str = "default") -> List[Document]:
     """
-    向量相似度检索（从 Chroma 中取，按用户ID隔离）
+    向量相似度检索（每个用户独立 collection，数据库层面隔离）
 
     Args:
         query: 查询文本
         top_n: 返回文档数
         doc_ids: 指定文档ID列表
-        user_id: 用户ID（用于隔离不同用户的向量库）
+        user_id: 用户ID（定位到该用户的独立向量库）
     """
-    # 按用户ID初始化向量库
-    init_vector_store(user_id)
+    # 获取该用户的独立向量库
+    store = get_or_create_user_vector_store(user_id)
 
-    print(f"[DEBUG] vector_search called: user_id={user_id}, query: {query[:100]}..., top_n: {top_n}, doc_ids: {doc_ids}")
+    print(f"[DEBUG] vector_search: user_id={user_id}, query={query[:60]}..., top_n={top_n}")
 
-    # 使用 Chroma 内置检索（支持 filter by doc_id）
+    # 构建过滤条件（只检索该用户的 collection）
+    where_filter = None
+    if doc_ids and len(doc_ids) > 0:
+        where_filter = {"doc_id": {"$in": [str(d) for d in doc_ids]}}
+
     try:
-        if doc_ids and len(doc_ids) > 0:
-            # 使用 Chroma 原生 filter（比手动过滤更高效）
-            doc_ids_str = [str(d) for d in doc_ids]
-            print(f"[DEBUG] Chroma filter by doc_ids: {doc_ids_str}")
+        search_kwargs = {"k": top_n}
+        if where_filter:
+            search_kwargs["filter"] = where_filter
 
-            # Chroma 的 where filter 语法
-            where_filter = {"doc_id": {"$in": doc_ids_str}}
-
-            retriever = vector_store.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": top_n, "filter": where_filter}
-            )
-            docs = retriever.invoke(query)
-            print(f"[DEBUG] Chroma filtered retriever returned {len(docs)} documents")
-
-            for d in docs:
-                d.metadata["source"] = "vector"
-                print(f"[DEBUG]   - {d.metadata.get('doc_name', 'unknown')}: {d.page_content[:50]}...")
-            return docs[:top_n]
-        else:
-            # 不使用 doc_ids 过滤
-            print(f"[DEBUG] Using Chroma retriever with k={top_n}")
-            retriever = vector_store.as_retriever(search_kwargs={"k": top_n})
-            docs = retriever.invoke(query)
-            print(f"[DEBUG] Chroma retriever returned {len(docs)} documents")
-            for d in docs:
-                d.metadata["source"] = "vector"
-                print(f"[DEBUG]   - {d.metadata.get('doc_name', 'unknown')}: {d.page_content[:50]}...")
-            return docs
+        retriever = store.as_retriever(
+            search_type="similarity",
+            search_kwargs=search_kwargs
+        )
+        docs = retriever.invoke(query)
+        print(f"[DEBUG] vector_search returned {len(docs)} docs for user_id={user_id}")
+        for d in docs:
+            d.metadata["source"] = "vector"
+        return docs
     except Exception as e:
         print(f"[ERROR] vector_search failed: {e}")
         import traceback
@@ -687,7 +688,7 @@ def hybrid_search(query: str, top_k: int = 3, fetch_k: int = 20,
         "user_id": user_id,
     }
 
-    # 1. 向量检索（按用户ID隔离）
+    # 1. 向量检索（该用户的独立 collection，数据库层面隔离）
     v_docs = vector_search(query, top_n=fetch_k, doc_ids=doc_ids, user_id=user_id)
     retrieval_info["vector_count"] = len(v_docs)
 
@@ -943,14 +944,12 @@ async def query_rag(request: RAGQueryRequest):
     user_id = request.user_id or "default"
 
     try:
-        # 按用户ID初始化向量库
-        if vector_store is None:
-            init_vector_store(user_id)
+        # 获取该用户的独立向量库
+        store = get_or_create_user_vector_store(user_id)
 
         # 检查该用户的向量库大小
         try:
-            collection = vector_store._collection
-            doc_count = collection.count()
+            doc_count = store._collection.count()
             print(f"[DEBUG] 向量数据库文档数: user_id={user_id}, count={doc_count}")
         except Exception:
             doc_count = 0
@@ -1251,16 +1250,26 @@ async def query_rag_internal(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.post("/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
-    # TODO: 从请求中获取 user_id（需配合 Java 后端传入）
-    user_id = "default"
+async def upload_document(file: UploadFile = File(...), user_id: str = Form("default")):
+    """
+    上传文档到知识库
+
+    Args:
+        file: 上传的文件
+        user_id: 用户ID（从 FormData 中读取，用于隔离不同用户的知识库）
+    """
     return await process_uploaded_files([file], user_id=user_id)
 
 
 @router.post("/upload/batch", response_model=DocumentUploadResponse)
-async def upload_documents_batch(files: list[UploadFile] = File(...)):
-    # TODO: 从请求中获取 user_id（需配合 Java 后端传入）
-    user_id = "default"
+async def upload_documents_batch(files: list[UploadFile] = File(...), user_id: str = Form("default")):
+    """
+    批量上传文档到知识库
+
+    Args:
+        files: 上传的文件列表
+        user_id: 用户ID（从 FormData 中读取，用于隔离不同用户的知识库）
+    """
     return await process_uploaded_files(files, user_id=user_id)
 
 
@@ -1367,7 +1376,10 @@ async def process_uploaded_files(files: list[UploadFile], user_id: str = "defaul
                 chunks_meta = [{"content": d.page_content, "chunk_index": i,
                                 "total_chunks": len(split_docs)}
                                for i, d in enumerate(split_docs)]
-                original_documents[doc_id] = {
+                # 保存到该用户的内存索引
+                if user_id not in user_documents:
+                    user_documents[user_id] = {}
+                user_documents[user_id][doc_id] = {
                     "filename": file.filename,
                     "chunks": chunks_meta,
                     "upload_time": str(datetime.now()),
@@ -1407,31 +1419,30 @@ async def process_uploaded_files(files: list[UploadFile], user_id: str = "defaul
                 print(f"[ERROR] 处理文件 {file.filename} 失败: {e}")
                 failed_files.append(f"{file.filename}: {str(e)}")
 
-        # 分批加入向量库（避免大文件超时）
+        # 分批加入该用户的独立向量库（避免大文件超时）
         if all_split_docs:
-            if vector_store is None:
-                init_vector_store()
-            
+            store = get_or_create_user_vector_store(user_id)
+
             total_docs = len(all_split_docs)
             batch_size = 50
-            print(f"[DEBUG] 开始分批添加 {total_docs} 个片段到向量数据库...")
-            
+            print(f"[DEBUG] 开始分批添加 {total_docs} 个片段到向量数据库 (user_id={user_id})...")
+
             for i in range(0, total_docs, batch_size):
                 batch = all_split_docs[i:i + batch_size]
                 start_idx = i + 1
                 end_idx = min(i + batch_size, total_docs)
                 print(f"[DEBUG] 添加批次 {start_idx}-{end_idx}/{total_docs}...")
-                vector_store.add_documents(batch)
+                store.add_documents(batch)
                 print(f"[DEBUG] 批次 {start_idx}-{end_idx} 添加成功")
-            
-            print(f"[DEBUG] 全部 {total_docs} 个片段添加成功（自动持久化）")
+
+            print(f"[DEBUG] 全部 {total_docs} 个片段添加成功 (user_id={user_id})")
 
         message = f"成功上传 {processed_count} 个文档，共 {len(all_split_docs)} 个片段"
         if failed_files:
             message += f"。失败 {len(failed_files)} 个文件: {', '.join(failed_files)}"
 
-        # 上传成功后，同步写 MySQL（让 Java 记录文档元数据）
-        _record_documents_to_mysql(uploaded_doc_records)
+        # 上传成功后，同步写 MySQL（让 Java 记录文档元数据，需传 user_id 确保归属正确）
+        _record_documents_to_mysql(uploaded_doc_records, user_id=user_id)
 
         return DocumentUploadResponse(
             success=True,
@@ -1465,9 +1476,8 @@ async def load_directory(directory_path: str):
             separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""]
         )
         split_docs = text_splitter.split_documents(documents)
-        if vector_store is None:
-            init_vector_store()
-        vector_store.add_documents(split_docs)
+        store = get_or_create_user_vector_store("default")
+        store.add_documents(split_docs)
         return {"success": True,
                 "message": f"从目录加载 {len(documents)} 个文档，共处理 {len(split_docs)} 个片段",
                 "documents_count": len(split_docs)}
@@ -1476,17 +1486,18 @@ async def load_directory(directory_path: str):
 
 
 @router.get("/stats")
-async def get_stats():
+async def get_stats(user_id: str = "default"):
+    """获取指定用户的知识库统计"""
     try:
-        if vector_store is None:
-            init_vector_store()
-        collection = vector_store._collection
-        count = collection.count()
+        store = get_or_create_user_vector_store(user_id)
+        count = store._collection.count()
+        bm25_count = len(user_bm25_index.get(user_id, {}))
         return {
             "success": True,
+            "user_id": user_id,
             "document_count": count,
-            "bm25_docs": bm25_total_docs,
-            "description": "PlanHub RAG 知识库（向量 + BM25 混合检索）"
+            "bm25_docs": bm25_count,
+            "description": "PlanHub RAG 知识库（向量 + BM25 混合检索，按用户隔离）"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1497,26 +1508,39 @@ async def clear_knowledge_base(user_id: str = "default"):
     """
     清空指定用户的知识库（按用户ID隔离）
 
+    删除该用户的独立 Chroma collection，同时清理 BM25 和内存索引。
+
     Args:
         user_id: 用户ID，只清空该用户的知识库
     """
     try:
-        global vector_store
-        # 清空该用户的向量库
-        db_path = os.path.join(settings.CHROMA_DB_PATH, user_id)
-        if os.path.exists(db_path):
-            shutil.rmtree(db_path)
-        vector_store = None
+        # 1. 删除该用户的独立向量库 collection
+        if user_id in user_vector_stores:
+            try:
+                store = user_vector_stores[user_id]
+                store._client.delete_collection(store._collection.name)
+                del user_vector_stores[user_id]
+                print(f"[INFO] 向量库 collection 已删除: user_id={user_id}")
+            except Exception as e:
+                print(f"[WARN] 向量库删除失败: {e}")
 
-        # 清空该用户的 BM25 索引
+        # 2. 清空该用户的 BM25 索引
         if user_id in user_bm25_index:
             user_bm25_index[user_id].clear()
         if user_id in user_bm25_stats:
             user_bm25_stats[user_id] = {"total_docs": 0, "avg_length": 0.0}
 
-        # 清空该用户的内存索引
+        # 3. 清空该用户的内存索引
         if user_id in user_documents:
             user_documents[user_id].clear()
+
+        # 4. 清空该用户的磁盘文档
+        docs_dir = os.path.join("./original_docs", user_id)
+        if os.path.exists(docs_dir):
+            for f in os.listdir(docs_dir):
+                fp = os.path.join(docs_dir, f)
+                if os.path.isfile(fp):
+                    os.remove(fp)
 
         return {"success": True, "message": f"用户 {user_id} 的知识库已清空"}
     except Exception as e:
@@ -1528,7 +1552,7 @@ async def clear_knowledge_base(user_id: str = "default"):
 # ══════════════════════════════════════════════════════════════════════════════
 
 @router.delete("/internal/documents/{doc_id}")
-async def internal_delete_document(doc_id: str):
+async def internal_delete_document(doc_id: str, user_id: str = "default"):
     """
     内部删除接口 - 由 Java 后端调用
 
@@ -1541,41 +1565,48 @@ async def internal_delete_document(doc_id: str):
     - Chroma 向量数据
     - 内存 BM25 索引
     - 磁盘文件
+
+    Args:
+        doc_id: 文档ID
+        user_id: 用户ID（通过 query param 传入，用于定位到该用户的独立向量库）
     """
-    global bm25_total_docs, bm25_avg_length
+    # 获取该用户的独立向量库
+    store = get_or_create_user_vector_store(user_id)
 
     deleted_chroma = 0
     deleted_bm25 = 0
     deleted_disk = False
 
-    # 1. 删 Chroma
-    if vector_store is not None:
+    # 1. 删该用户独立 Chroma 向量库中的文档
+    try:
+        store.delete(where={"doc_id": doc_id})
+        print(f"[INFO] [Internal] Chroma 已删除 doc_id={doc_id}, user_id={user_id}")
+        deleted_chroma = 1
+    except Exception as e:
+        print(f"[WARN] [Internal] Chroma delete failed: {e}")
         try:
-            vector_store.delete(where={"doc_id": doc_id})
-            print(f"[INFO] [Internal] Chroma 已删除 doc_id={doc_id}")
-            deleted_chroma = 1
-        except Exception as e:
-            print(f"[WARN] [Internal] Chroma delete failed: {e}")
-            try:
-                collection = vector_store._collection
-                results = collection.get(where={"doc_id": doc_id})
-                if results and results.get("ids"):
-                    collection.delete(ids=results["ids"])
-                    deleted_chroma = len(results["ids"])
-            except Exception as e2:
-                print(f"[ERROR] [Internal] Chroma fallback delete failed: {e2}")
+            collection = store._collection
+            results = collection.get(where={"doc_id": doc_id})
+            if results and results.get("ids"):
+                collection.delete(ids=results["ids"])
+                deleted_chroma = len(results["ids"])
+        except Exception as e2:
+            print(f"[ERROR] [Internal] Chroma fallback delete failed: {e2}")
 
-    # 2. 删 BM25 内存索引
-    keys_to_del = [k for k in bm25_index if k.startswith(doc_id + "__")]
+    # 2. 删该用户的 BM25 内存索引
+    user_index = user_bm25_index.get(user_id, {})
+    keys_to_del = [k for k in user_index if k.startswith(doc_id + "__")]
     for k in keys_to_del:
-        del bm25_index[k]
+        del user_index[k]
     deleted_bm25 = len(keys_to_del)
-    bm25_total_docs = max(bm25_total_docs - deleted_bm25, 0)
-    if bm25_total_docs == 0:
-        bm25_avg_length = 0.0
+    if user_id in user_bm25_stats:
+        stats = user_bm25_stats[user_id]
+        stats["total_docs"] = max(stats["total_docs"] - deleted_bm25, 0)
+        if stats["total_docs"] == 0:
+            stats["avg_length"] = 0.0
 
-    # 3. 删磁盘文件
-    docs_dir = "./original_docs"
+    # 3. 删磁盘文件（在该用户的隔离目录下）
+    docs_dir = os.path.join("./original_docs", user_id)
     for ext in [".txt", ".md", ""]:
         doc_path = os.path.join(docs_dir, f"{doc_id}{ext}")
         if os.path.exists(doc_path):
@@ -1585,16 +1616,18 @@ async def internal_delete_document(doc_id: str):
             except Exception as e:
                 print(f"[WARN] [Internal] 删磁盘文件失败: {e}")
 
-    # 4. 删内存 original_documents
-    if doc_id in original_documents:
-        del original_documents[doc_id]
+    # 4. 删内存 user_documents
+    user_docs = user_documents.get(user_id, {})
+    if doc_id in user_docs:
+        del user_docs[doc_id]
 
-    print(f"[INFO] [Internal Delete] doc_id={doc_id}: "
+    print(f"[INFO] [Internal Delete] doc_id={doc_id}, user_id={user_id}: "
           f"chroma={deleted_chroma}, bm25={deleted_bm25}, disk={deleted_disk}")
 
     return {
         "success": True,
         "doc_id": doc_id,
+        "user_id": user_id,
         "details": {
             "chroma_cleared": deleted_chroma > 0,
             "bm25_chunks_deleted": deleted_bm25,
@@ -1604,19 +1637,22 @@ async def internal_delete_document(doc_id: str):
 
 
 @router.get("/internal/documents/{doc_id}")
-async def internal_get_document(doc_id: str):
+async def internal_get_document(doc_id: str, user_id: str = "default"):
     """内部查询 - 获取某个 doc_id 的所有 chunk 信息（用于调试）"""
-    info = original_documents.get(doc_id, {})
+    user_docs = user_documents.get(user_id, {})
+    info = user_docs.get(doc_id, {})
 
-    # 统计 BM25 索引中的 chunk
-    chunks = [k.split("__")[1] for k in bm25_index if k.startswith(doc_id + "__")]
+    # 统计该用户的 BM25 索引中的 chunk
+    user_index = user_bm25_index.get(user_id, {})
+    chunks = [k.split("__")[1] for k in user_index if k.startswith(doc_id + "__")]
 
     return {
         "doc_id": doc_id,
+        "user_id": user_id,
         "filename": info.get("filename", "unknown"),
         "chunk_count": info.get("chunk_count", 0),
         "bm25_indexed_chunks": len(chunks),
-        "in_memory": doc_id_str in original_documents
+        "in_memory": doc_id_str in user_docs
     }
 
 
@@ -1681,26 +1717,23 @@ async def delete_document(doc_id: str, user_id: str = "default"):
         deleted_from_bm25 = 0
         deleted_from_disk = False
 
-        # 1. 删 Chroma 向量数据库（按 doc_id 精确删除，且确保 user_id 匹配）
-        if vector_store is not None:
+        # 1. 删该用户独立 Chroma 向量库中的文档
+        store = get_or_create_user_vector_store(user_id)
+        try:
+            store.delete(where={"doc_id": str(doc_id)})
+            print(f"[INFO] Chroma 已删除 doc_id={doc_id}, user_id={user_id}")
+            deleted_from_chroma = 1
+        except Exception as e:
+            print(f"[WARN] Chroma 按 doc_id 删除失败: {e}")
             try:
-                # 同时过滤 doc_id 和 user_id，防止误删其他用户文档
-                vector_store.delete(where={"doc_id": str(doc_id), "user_id": user_id})
-                print(f"[INFO] Chroma 已删除 doc_id={doc_id}, user_id={user_id} 的所有片段")
-                deleted_from_chroma = 1  # 标记执行成功
-            except Exception as e:
-                # 部分版本 Chroma 可能不支持 delete 语法，回退到按 ID 删
-                print(f"[WARN] Chroma 按 doc_id 删除失败，尝试按 ID 删除: {e}")
-                try:
-                    # 获取该 doc_id 下的所有片段 ID（同时校验 user_id）
-                    collection = vector_store._collection
-                    results = collection.get(where={"doc_id": str(doc_id), "user_id": user_id})
-                    if results and results.get("ids"):
-                        collection.delete(ids=results["ids"])
-                        deleted_from_chroma = len(results["ids"])
-                        print(f"[INFO] Chroma 通过 ID 删除了 {deleted_from_chroma} 个片段")
-                except Exception as e2:
-                    print(f"[ERROR] Chroma 删除失败: {e2}")
+                collection = store._collection
+                results = collection.get(where={"doc_id": str(doc_id)})
+                if results and results.get("ids"):
+                    collection.delete(ids=results["ids"])
+                    deleted_from_chroma = len(results["ids"])
+                    print(f"[INFO] Chroma 通过 ID 删除了 {deleted_from_chroma} 个片段")
+            except Exception as e2:
+                print(f"[ERROR] Chroma 删除失败: {e2}")
 
         # 2. 删该用户的 BM25 内存索引
         keys_to_del = [k for k in user_index if k.startswith(doc_id + "__")]
@@ -1749,10 +1782,15 @@ async def delete_document(doc_id: str, user_id: str = "default"):
 
 
 @router.post("/reindex")
-async def reindex_documents():
-    """从原始文档目录重新索引到向量库"""
+async def reindex_documents(user_id: str = "default"):
+    """
+    从原始文档目录重新索引到向量库（按用户ID隔离）
+
+    Args:
+        user_id: 用户ID，只重新索引该用户的文档
+    """
     try:
-        docs_dir = "./original_docs"
+        docs_dir = os.path.join("./original_docs", user_id)
         if not os.path.exists(docs_dir):
             raise HTTPException(status_code=404, detail="没有找到已保存的原始文档")
 
@@ -1760,11 +1798,11 @@ async def reindex_documents():
         if not files:
             raise HTTPException(status_code=404, detail="原始文档目录为空")
 
-        # 重新构建 BM25 索引 + 内存索引
-        bm25_index.clear()
-
-        if vector_store is None:
-            init_vector_store()
+        # 重新构建该用户的 BM25 索引 + 内存索引
+        if user_id not in user_bm25_index:
+            user_bm25_index[user_id] = {}
+        if user_id not in user_documents:
+            user_documents[user_id] = {}
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500, chunk_overlap=50,
@@ -1784,34 +1822,39 @@ async def reindex_documents():
                 if not actual_content.strip():
                     continue
 
-                doc = Document(page_content=actual_content, metadata={"source": filename_in_doc})
-                split_docs = text_splitter.split_documents([doc])
-                split_docs = [d for d in split_docs if d.page_content and d.page_content.strip()]
-                for i, d in enumerate(split_docs):
-                    d.metadata["doc_id"] = doc_id
-                    d.metadata["doc_name"] = filename_in_doc
-                    d.metadata["chunk_index"] = i
-                    d.metadata["total_chunks"] = len(split_docs)
-                    add_doc_to_bm25(doc_id, filename_in_doc, i, d.page_content)
+            doc = Document(page_content=actual_content, metadata={"source": filename_in_doc})
+            split_docs = text_splitter.split_documents([doc])
+            split_docs = [d for d in split_docs if d.page_content and d.page_content.strip()]
+            for i, d in enumerate(split_docs):
+                d.metadata["doc_id"] = doc_id
+                d.metadata["doc_name"] = filename_in_doc
+                d.metadata["chunk_index"] = i
+                d.metadata["total_chunks"] = len(split_docs)
+                d.metadata["user_id"] = user_id
+                add_doc_to_bm25(doc_id, filename_in_doc, i, d.page_content, user_id=user_id)
 
-                # 更新内存索引
-                chunks_meta = [{"content": d.page_content, "chunk_index": i,
-                                "total_chunks": len(split_docs)} for i, d in enumerate(split_docs)]
-                original_documents[doc_id] = {
-                    "filename": filename_in_doc,
-                    "chunks": chunks_meta,
-                    "upload_time": str(datetime.now()),
-                    "content": actual_content,
-                }
+            # 更新该用户的内存索引
+            chunks_meta = [{"content": d.page_content, "chunk_index": i,
+                            "total_chunks": len(split_docs)} for i, d in enumerate(split_docs)]
+            user_documents[user_id][doc_id] = {
+                "filename": filename_in_doc,
+                "chunks": chunks_meta,
+                "upload_time": str(datetime.now()),
+                "content": actual_content,
+            }
 
-                all_docs.extend(split_docs)
-                total_chunks += len(split_docs)
-                print(f"[DEBUG] 重新索引: {filename_in_doc}, 片段数: {len(split_docs)}")
+            all_docs.extend(split_docs)
+            total_chunks += len(split_docs)
+            print(f"[DEBUG] 重新索引: user_id={user_id}, {filename_in_doc}, 片段数: {len(split_docs)}")
 
-        vector_store.add_documents(all_docs)
+        # 添加到该用户的独立向量库
+        if all_docs:
+            store = get_or_create_user_vector_store(user_id)
+            store.add_documents(all_docs)
 
         return {
             "success": True,
+            "user_id": user_id,
             "message": f"成功重新索引 {len(files)} 个文档，共 {total_chunks} 个片段",
             "documents_count": len(files),
             "chunks_count": total_chunks,
@@ -1827,9 +1870,10 @@ async def reindex_documents():
 
 
 @router.get("/document/{doc_id}")
-async def get_document_preview(doc_id: str):
+async def get_document_preview(doc_id: str, user_id: str = "default"):
+    """获取文档预览（按用户ID隔离）"""
     try:
-        docs_dir = "./original_docs"
+        docs_dir = os.path.join("./original_docs", user_id)
         doc_path = os.path.join(docs_dir, f"{doc_id}.txt")
         if not os.path.exists(doc_path):
             raise HTTPException(status_code=404, detail="文档不存在")
@@ -1953,40 +1997,64 @@ def load_doc_file(file_path: str):
 # ══════════════════════════════════════════════════════════════════════════════
 
 try:
-    init_vector_store()
-    init_qa_chain()
-    # 启动时从磁盘加载原始文档到内存索引（保证 BM25 可用）
-    docs_dir = "./original_docs"
-    if os.path.exists(docs_dir):
-        for filename in os.listdir(docs_dir):
-            if not filename.endswith(".txt"):
-                continue
-            doc_id = filename.replace(".txt", "")
+    # 启动时从磁盘加载所有用户的原始文档到各自的内存索引
+    import uuid as _uuid
+    base_docs_dir = "./original_docs"
+    if os.path.exists(base_docs_dir):
+        # 遍历所有用户子目录
+        for uid_entry in os.listdir(base_docs_dir):
+            user_dir = os.path.join(base_docs_dir, uid_entry)
+            if not os.path.isdir(user_dir):
+                # 兼容旧版本：根目录下的 .txt 文件归入 "default" 用户
+                if uid_entry.endswith(".txt"):
+                    uid = "default"
+                    user_dir = base_docs_dir
+                else:
+                    continue
+            else:
+                uid = uid_entry
+
+            # 确保该用户的索引空间存在
+            init_document_indices(uid)
+
             try:
-                with open(os.path.join(docs_dir, filename), "r", encoding="utf-8") as f:
-                    content = f.read()
-                lines = content.split("\n")
-                fname = lines[0].replace("===", "").strip() if lines else filename
-                actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
-                if actual_content.strip():
-                    # 加入 BM25 索引
-                    tsplitter = RecursiveCharacterTextSplitter(
-                        chunk_size=500, chunk_overlap=50,
-                        separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""]
-                    )
-                    doc = Document(page_content=actual_content)
-                    chunks = tsplitter.split_documents([doc])
-                    for i, c in enumerate(chunks):
-                        add_doc_to_bm25(doc_id, fname, i, c.page_content)
-                    original_documents[doc_id] = {
-                        "filename": fname,
-                        "chunks": [{"content": c.page_content, "chunk_index": i, "total_chunks": len(chunks)}
-                                   for i, c in enumerate(chunks)],
-                        "upload_time": str(datetime.now()),
-                        "content": actual_content,
-                    }
+                files = [f for f in os.listdir(user_dir) if f.endswith(".txt")]
+                for filename in files:
+                    doc_id = filename.replace(".txt", "")
+                    # 跳过已加载的文档（避免重启时重复加载）
+                    if uid in user_documents and doc_id in user_documents[uid]:
+                        continue
+                    doc_path = os.path.join(user_dir, filename)
+                    try:
+                        with open(doc_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        lines = content.split("\n")
+                        fname = lines[0].replace("===", "").strip() if lines else filename
+                        actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
+                        if actual_content.strip():
+                            tsplitter = RecursiveCharacterTextSplitter(
+                                chunk_size=500, chunk_overlap=50,
+                                separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""]
+                            )
+                            doc = Document(page_content=actual_content)
+                            chunks = tsplitter.split_documents([doc])
+                            for i, c in enumerate(chunks):
+                                add_doc_to_bm25(doc_id, fname, i, c.page_content, user_id=uid)
+                            user_documents[uid][doc_id] = {
+                                "filename": fname,
+                                "chunks": [{"content": c.page_content, "chunk_index": i, "total_chunks": len(chunks)}
+                                           for i, c in enumerate(chunks)],
+                                "upload_time": str(datetime.now()),
+                                "content": actual_content,
+                            }
+                    except Exception as e:
+                        print(f"[WARN] 启动时加载文档 {uid}/{filename} 失败: {e}")
             except Exception as e:
-                print(f"[WARN] 启动时加载文档 {filename} 失败: {e}")
-    print(f"RAG 知识库初始化成功, BM25 索引文档块数: {bm25_total_docs}")
+                print(f"[WARN] 启动时扫描用户目录 {uid} 失败: {e}")
+
+    # 初始化默认用户的向量库（供 qa_chain 使用）
+    init_qa_chain()
+    total_bm25 = sum(len(v) for v in user_bm25_index.values())
+    print(f"[INFO] RAG 知识库初始化成功, 用户数: {len(user_documents)}, BM25 总片段数: {total_bm25}")
 except Exception as e:
-    print(f"RAG 知识库初始化失败: {e}")
+    print(f"[ERROR] RAG 知识库初始化失败: {e}")

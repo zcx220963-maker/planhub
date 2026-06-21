@@ -47,7 +47,8 @@ const RAG: React.FC = () => {
 
   const loadDocuments = async () => {
     try {
-      const result = await planAssistantApi.getDocuments();
+      const userId = user?.id || 'anonymous';
+      const result = await planAssistantApi.getDocuments(userId);
       setDocuments(result.documents || []);
     } catch (error) {
       console.error('Load documents error:', error);
@@ -144,6 +145,9 @@ const RAG: React.FC = () => {
       for (let i = 0; i < files.length; i++) {
         formData.append('files', files[i]);
       }
+      // 添加 user_id，确保文档上传到当前用户的知识库
+      const userId = user?.id || 'anonymous';
+      formData.append('user_id', userId);
 
       const response = await fetch(`${AI_API_BASE}/rag/upload/batch`, {
         method: 'POST',
@@ -171,7 +175,8 @@ const RAG: React.FC = () => {
   const deleteDocument = async (docId: number, docName: string) => {
     if (!confirm(`确定要删除文档 "${docName}" 吗？`)) return;
     try {
-      const response = await fetch(`${AI_API_BASE}/rag/documents/${docId}`, {
+      const userId = user?.id || 'anonymous';
+      const response = await fetch(`${AI_API_BASE}/rag/documents/${docId}?user_id=${userId}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });

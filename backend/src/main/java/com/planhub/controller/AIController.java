@@ -147,14 +147,21 @@ public class AIController {
      * 转发 GET 请求
      */
     private ResponseEntity<Map<String, Object>> forwardGet(String path, Authentication authentication, HttpServletRequest request) {
+        String userId = getCurrentUserId(authentication);
         String url = aiServiceConfig.getAiServiceUrl() + path;
+        // 将 user_id 作为 query param 传递给 Python（Python 端从 query param 读取）
+        if (url.contains("?")) {
+            url += "&user_id=" + userId;
+        } else {
+            url += "?user_id=" + userId;
+        }
         String jwtToken = extractJwtToken(request);
-        log.debug("转发 AI 请求: GET {}", url);
-        
+        log.debug("转发 AI 请求: GET {}, userId={}", url, userId);
+
         try {
             HttpHeaders headers = buildInternalHeaders(null, jwtToken);
             HttpEntity<String> entity = new HttpEntity<>(headers);
-            
+
             @SuppressWarnings({"unchecked", "rawtypes"})
             ResponseEntity<Map<String, Object>> response = (ResponseEntity<Map<String, Object>>) (ResponseEntity<?>) aiRestTemplate.exchange(
                 url, HttpMethod.GET, entity, Map.class);
@@ -185,14 +192,21 @@ public class AIController {
      * 转发 DELETE 请求
      */
     private ResponseEntity<Map<String, Object>> forwardDelete(String path, Authentication authentication, HttpServletRequest request) {
+        String userId = getCurrentUserId(authentication);
         String url = aiServiceConfig.getAiServiceUrl() + path;
+        // 将 user_id 作为 query param 传递给 Python（Python 端从 query param 读取）
+        if (url.contains("?")) {
+            url += "&user_id=" + userId;
+        } else {
+            url += "?user_id=" + userId;
+        }
         String jwtToken = extractJwtToken(request);
-        log.debug("转发 AI 请求: DELETE {}", url);
-        
+        log.debug("转发 AI 请求: DELETE {}, userId={}", url, userId);
+
         try {
             HttpHeaders headers = buildInternalHeaders(null, jwtToken);
             HttpEntity<String> entity = new HttpEntity<>(headers);
-            
+
             @SuppressWarnings("unchecked")
             ResponseEntity<Map> response = aiRestTemplate.exchange(
                 url, HttpMethod.DELETE, entity, Map.class);
@@ -456,7 +470,10 @@ public class AIController {
                 setContentType(MediaType.parseMediaType(fileContentType));
                 setContentDispositionFormData("file", fileName);
             }}));
-            
+
+            // 传递 user_id 给 Python（Python 端从 Form 参数读取）
+            body.add("user_id", userId);
+
             ResponseEntity<Map> response = aiRestTemplate.postForEntity(url, new HttpEntity<>(body, headers), Map.class);
             return new ResponseEntity<>(response.getBody(), response.getStatusCode());
         } catch (Exception e) {
@@ -498,12 +515,15 @@ public class AIController {
                     setContentDispositionFormData("files", fileName);
                 }}));
             }
-            
+
+            // 传递 user_id 给 Python（Python 端从 Form 参数读取）
+            body.add("user_id", userId);
+
             HttpEntity<MultiValueMap<String, Object>> entity = new HttpEntity<>(body, headers);
-            
+
             @SuppressWarnings("unchecked")
             ResponseEntity<Map> response = aiRestTemplate.postForEntity(url, entity, Map.class);
-            
+
             return new ResponseEntity<>(response.getBody(), response.getStatusCode());
         } catch (HttpClientErrorException | HttpServerErrorException e) {
             log.error("AI 服务返回错误: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());

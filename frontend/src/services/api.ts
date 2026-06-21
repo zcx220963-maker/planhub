@@ -454,16 +454,19 @@ export const planAssistantApi = {
     const response = await api.post('/ai/rag/query', { 
       query, 
       session_id: sessionId || undefined, 
-      user_id: userId ? String(userId) : "1", 
+      user_id: userId || "default",
       top_k: 3,
       doc_ids: docIds && docIds.length > 0 ? docIds : undefined
     });
     return response.data;
   },
 
-  uploadDocument: async (file: File): Promise<{ message: string; document_id: string }> => {
+  uploadDocument: async (file: File, userId?: string): Promise<{ message: string; document_id: string }> => {
     const formData = new FormData();
     formData.append('file', file);
+    if (userId) {
+      formData.append('user_id', userId);
+    }
     const response = await api.post('/ai/rag/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -472,8 +475,9 @@ export const planAssistantApi = {
     return response.data;
   },
 
-  getDocuments: async (): Promise<{ documents: any[] }> => {
-    const response = await api.get('/ai/rag/documents');
+  getDocuments: async (userId?: string): Promise<{ documents: any[] }> => {
+    const params = userId ? `?user_id=${userId}` : '';
+    const response = await api.get(`/ai/rag/documents${params}`);
     return response.data;
   },
 };
