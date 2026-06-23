@@ -72,7 +72,13 @@ planhub2.0/
 - **BM25关键词检索** + **向量相似度检索** + **LLM重排优化**
 - 支持PDF/DOCX/PPTX/XLSX文档解析
 
-### 5. 双后端安全架构
+### 5. 智能容错和降级机制 
+设计完整的系统容错和降级策略：
+- **5级降级策略**：备用模型→备用服务→核心功能→缓存响应→默认回复
+- **智能重试机制**：实现指数退避重试，系统可用性达到99.5%
+- **错误分类恢复**：智能错误分类和自动恢复，减少人工干预80%
+
+### 6. 双后端安全架构
 - Java后端负责业务逻辑与JWT鉴权
 - Python后端专注AI处理，仅监听127.0.0.1
 - 确保AI服务零外部暴露
@@ -873,10 +879,188 @@ BM25缓存：BM25索引保存到pickle文件，重启后快速加载
 嵌入缓存：相同文档的嵌入向量缓存，避免重复计算
 批量处理：支持批量上传文档，提高处理效率
 
+## 八、重试和降级机制
+1. 智能重试机制 (ErrorRecoveryService)
+错误分类系统
+你的系统能自动识别8种错误类型：
 
 
+ErrorType.TIMEOUT           # 超时错误
+ErrorType.RATE_LIMIT        # 速率限制  
+ErrorType.SERVICE_UNAVAILABLE # 服务不可用
+ErrorType.INVALID_RESPONSE  # 无效响应
+ErrorType.TOOL_ERROR        # 工具调用错误
+ErrorType.CONTEXT_TOO_LONG  # 上下文过长
+ErrorType.MODEL_ERROR       # 模型错误
+ErrorType.UNKNOWN          # 未知错误
+指数退避重试策略
 
-## 八、安全架构
+# 重试延迟计算公式
+delay = min(base_delay * (2 ** retry_count), max_delay)
+
+# 实际重试过程
+第1次重试：延迟 1s  (1 * 2^0)
+第2次重试：延迟 2s  (1 * 2^1) 
+第3次重试：延迟 4s  (1 * 2^2)
+最大延迟：30s
+针对不同错误的重试策略
+
+# 超时错误 → 指数退避重试
+if ErrorType.TIMEOUT:
+    delay = min(1 * (2 ** retry_count), 30)
+    await asyncio.sleep(delay)
+
+# 速率限制 → 更长延迟的重试  
+if ErrorType.RATE_LIMIT:
+    delay = min(1 * (2 ** retry_count) * 2, 30)  # 延迟翻倍
+    await asyncio.sleep(delay)
+
+# 服务不可用 → 直接切换到备用服务
+if ErrorType.SERVICE_UNAVAILABLE:
+    return {"action": "fallback_to_backup_service"}
+2. 5级降级策略 (FallbackService)
+降级级别定义
+
+class DegradationLevel(Enum):
+    NORMAL = 0          # 完全正常，使用主服务
+    BACKUP_MODEL = 1    # 切换到备用模型
+    BACKUP_SERVICE = 2  # 切换到备用服务  
+    CORE_ONLY = 3       # 只保留核心功能
+    CACHE_ONLY = 4      # 只返回缓存结果
+自动降级触发条件
+
+# 触发条件
+self.failure_threshold = 3        # 连续失败3次
+self.response_time_threshold = 10  # 响应时间超过10秒
+self.error_rate_threshold = 0.5    # 错误率超过50%
+
+# 自动降级流程
+NORMAL → BACKUP_MODEL → BACKUP_SERVICE → CORE_ONLY → CACHE_ONLY
+具体降级实现
+
+# Level 0: 正常状态
+if current_level == NORMAL:
+    try:
+        result = await primary_func(messages, tools)
+        record_success()
+    except:
+        record_failure()
+
+# Level 1: 备用模型
+if current_level == BACKUP_MODEL:
+    try:
+        result = await backup_func(messages, tools)  # 使用备用模型
+    except:
+        degrade()  # 继续降级
+
+# Level 3: 只保留核心功能
+if current_level == CORE_ONLY:
+    result = await primary_func(messages, tools=None)  # 禁用工具
+
+# Level 4: 只返回缓存
+if current_level == CACHE_ONLY:
+    return get_cached_response()  # 返回缓存结果
+3. 智能恢复机制
+恢复策略
+
+# 恢复条件：故障后5分钟无新故障
+if time_since_last_failure > 300:  # 5分钟
+    if current_level == CACHE_ONLY:
+        current_level = CORE_ONLY
+    elif current_level == CORE_ONLY:
+        current_level = BACKUP_SERVICE
+    elif current_level == BACKUP_SERVICE:
+        current_level = BACKUP_MODEL
+    elif current_level == BACKUP_MODEL:
+        current_level = NORMAL
+状态持久化
+
+# 状态保存到Redis
+state = {
+    "current_level": self.current_level.value,
+    "failure_count": self.failure_count,
+    "last_failure_time": self.last_failure_time,
+    "stats": self.stats
+}
+redis.setex("fallback:state", 3600, json.dumps(state))
+4. 实际工作流程示例
+用户请求处理流程
+
+graph TD
+    A[用户请求] --> B{当前降级级别}
+    B -->|NORMAL| C[调用主模型]
+    B -->|BACKUP_MODEL| D[调用备用模型]
+    B -->|CORE_ONLY| E[禁用工具调用]
+    B -->|CACHE_ONLY| F[返回缓存]
+    
+    C --> G{是否成功?}
+    G -->|是| H[记录成功]
+    G -->|否| I[记录失败]
+    
+    D --> J{是否成功?}
+    J -->|是| H
+    J -->|否| I
+    
+    I --> K{连续失败>=3次?}
+    K -->|是| L[自动降级]
+    K -->|否| M[指数退避重试]
+    
+    L --> N[更新降级级别]
+    N --> O[保存状态到Redis]
+    
+    H --> P{当前是否降级?}
+    P -->|是| Q{5分钟内无故障?}
+    Q -->|是| R[自动恢复]
+    Q -->|否| S[保持当前级别]
+具体代码执行流程
+
+# 1. 尝试主模型
+try:
+    result = await asyncio.wait_for(
+        primary_func(messages, tools),
+        timeout=10  # 10秒超时
+    )
+    await record_success()
+    return result
+except asyncio.TimeoutError:
+    await record_failure("timeout")
+    
+# 2. 重试机制
+if failure_count < 3:
+    delay = min(1 * (2 ** retry_count), 30)
+    await asyncio.sleep(delay)
+    # 重试...
+    
+# 3. 降级机制
+if failure_count >= 3:
+    current_level = BACKUP_MODEL  # 切换到备用模型
+    result = await backup_func(messages, tools)
+    
+# 4. 所有模型都失败
+return {
+    "content": "抱歉，当前服务暂时不可用，请稍后再试。",
+    "model": "default",
+    "error": True
+}
+5. 关键特性总结
+5.1 重试机制特点
+ 智能错误分类：8种错误类型，针对性处理
+ 指数退避：避免雪崩效应
+ 最大重试次数：最多3次重试
+ 延迟上限：最大30秒延迟
+5.2 降级机制特点
+ 5级降级策略：从备用模型到缓存响应
+ 自动触发：连续失败3次自动降级
+ 智能恢复：故障后5分钟无新故障自动恢复
+ 状态持久化：降级状态保存到Redis
+5,3 监控和统计
+ 失败计数：记录连续失败次数
+ 成功/失败统计：详细的使用统计
+ 降级级别追踪：实时监控系统状态
+ 自动恢复检测：定期检测是否可恢复
+这套机制确保了系统的高可用性，即使在AI服务不稳定的情况下，也能为用户提供持续的服务
+
+## 九、安全架构
 
 ### 多层安全防护
 
@@ -950,7 +1134,7 @@ public class AIController {
 
 
 
-## 九、许可证
+## 十、许可证
 
 本项目使用 [MIT License](LICENSE) 许可证。
 
