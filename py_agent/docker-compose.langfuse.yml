@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  langfuse:
+    image: langfuse/langfuse:v2
+    container_name: planhub-langfuse
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+      LANGFUSE_PUBLIC_KEY: pk-lf-dev-public-key-12345
+      LANGFUSE_SECRET_KEY: sk-lf-dev-secret-key-12345
+      LANGFUSE_HOST: http://localhost:3000
+      LANGFUSE_BASEURL: http://localhost:3000
+      LANGFUSE_ENCRYPTION_KEY: dev-encryption-key-32chars!!
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      LANGFUSE_FORCE_SIGN_OUT: "false"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ""
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+    networks:
+      - langfuse-network
+
+  postgres:
+    image: postgres:15
+    container_name: planhub-langfuse-postgres
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - langfuse-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: planhub-langfuse-redis
+    restart: unless-stopped
+    networks:
+      - langfuse-network
+
+volumes:
+  langfuse-postgres-data:
+
+networks:
+  langfuse-network:
+    driver: bridge

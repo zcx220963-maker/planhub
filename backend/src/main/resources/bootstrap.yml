@@ -1,0 +1,46 @@
+spring:
+  application:
+    name: planhub-backend
+
+  # ═══════════ Nacos 配置中心 ═══════════
+  # 默认禁用（大多数开发环境没有部署 Nacos，直接用 application.yml + 环境变量即可）
+  # 启用方式：把 enabled 改成 true，或启动时加 -Dspring.cloud.nacos.config.enabled=true
+  cloud:
+    nacos:
+      config:
+        enabled: ${NACOS_CONFIG_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:public}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+        file-extension: yaml
+        username: ${NACOS_USERNAME:nacos}
+        password: ${NACOS_PASSWORD:nacos}
+        # 扩展配置（对应 Nacos 控制台里不同 dataId 的配置）
+        extension-configs:
+          - data-id: planhub-datasource.yaml
+            group: DEFAULT_GROUP
+            refresh: true
+          - data-id: planhub-jwt.yaml
+            group: DEFAULT_GROUP
+            refresh: true
+          - data-id: planhub-ai.yaml
+            group: DEFAULT_GROUP
+            refresh: true
+        # 共享配置（跨应用共享）
+        shared-configs:
+          - data-id: planhub-common.yaml
+            group: DEFAULT_GROUP
+            refresh: true
+
+      # ═══════════ Nacos 服务发现（可选）═══════════
+      discovery:
+        enabled: ${NACOS_DISCOVERY_ENABLED:false}
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:public}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+
+# ═══════════ 日志 ═══════════
+logging:
+  level:
+    com.alibaba.nacos: WARN
+    org.springframework.cloud.bootstrap: WARN

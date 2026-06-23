@@ -1,0 +1,98 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: planhub-backend
+
+  # ======= 数据源配置（如果 Nacos 启用，会被 Nacos 的 planhub-datasource.yaml 覆盖）=======
+  datasource:
+    url: jdbc:mysql://localhost:3306/planhub?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: 1234
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQLDialect
+
+  # ======= Nacos 本地快照写目录（关键：避免 user.home 不可写）=======
+  # 方式一：在启动参数中配置（推荐）
+  # java -Duser.home=./work -Dnacos.client.cache.dir=./nacos-cache -jar planhub-backend.jar
+  #
+  # 方式二：在 application.yml 中通过 System.setProperty 配置（不推荐，因为加载时机太晚）
+
+# ======= JWT 配置（如果 Nacos 启用，会被 planhub-jwt.yaml 覆盖）=======
+jwt:
+  secret: YOUR_JWT_SECRET_KEY
+  access-token-expiration: 3600000
+  refresh-token-expiration: 86400000
+
+# ======= AI 服务配置（如果 Nacos 启用，会被 planhub-ai.yaml 覆盖）=======
+ai:
+  service:
+    url: http://127.0.0.1:8000
+    internal-secret: planhub-internal-secret-key-please-change-in-production-2025
+    internal-secret-header: X-Internal-Api-Secret
+    connect-timeout: 5000
+    read-timeout: 300000
+
+logging:
+  level:
+    com.planhub: DEBUG
+    org.springframework.security: DEBUG
+    com.alibaba.nacos: INFO
+    org.springframework.cloud.bootstrap: DEBUG
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.planhub.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+
+# ============ Nacos 控制台配置示例（供参考）============
+# 在 Nacos 控制台需要创建以下 dataId 的配置：
+#
+# 1) planhub-backend.yaml  (自动加载，与应用名一致)
+#    内容：服务器端口、日志级别等通用配置
+#
+# 2) planhub-datasource.yaml  (extension-configs 加载)
+#    内容：
+#      spring:
+#        datasource:
+#          url: jdbc:mysql://prod-db:3306/planhub?...
+#          username: planhub_user
+#          password: encrypted_password
+#
+# 3) planhub-jwt.yaml  (extension-configs 加载)
+#    内容：
+#      jwt:
+#        secret: your-64-byte-random-secret-key-here
+#        access-token-expiration: 3600000
+#        refresh-token-expiration: 86400000
+#
+# 4) planhub-ai.yaml (extension-configs 加载)
+#    内容：
+#      ai:
+#        service:
+#          url: http://127.0.0.1:8000
+#          internal-secret: your-long-random-secret
+#          internal-secret-header: X-Internal-Api-Secret
+#
+# 5) planhub-common.yaml (shared-configs，跨应用共享)
+#    内容：全局通用的配置（如公共开关、限流阈值等）
+#
+# 配置热更新说明：
+#   - 在 Nacos 控制台修改配置 → 点击发布 → Java 应用自动刷新 @RefreshScope 的 Bean
+#   - 无需重启应用，敏感配置（密码/密钥）可以加密存储

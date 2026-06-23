@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>planHub - 个人中心</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #f8fafc;
+            --accent: #0ea5e9;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --text-primary: #0f172a;
+            --text-secondary: #64748b;
+            --border: #e2e8f0;
+            --shadow: rgba(0, 0, 0, 0.1);
+            --sidebar-bg: #1e293b;
+            --card-bg: white;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--secondary);
+            color: var(--text-primary);
+            min-height: 100vh;
+        }
+
+        /* Layout */
+        .dashboard-container {
+            display: flex;
+            height: 100vh;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 280px;
+            background: var(--sidebar-bg);
+            color: white;
+            padding: 24px 0;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .logo {
+            padding: 0 24px 32px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .logo h1 {
+            font-size: 1.8rem;
+            font-weight: 800;
+            letter-spacing: -1px;
+        }
+
+        .nav-menu {
+            padding: 24px 0;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border-left: 3px solid transparent;
+        }
+
+        .nav-item:hover,
+        .nav-item.active {
+            background: rgba(255,255,255,0.1);
+            border-left-color: var(--primary);
+        }
+
+        .nav-item i {
+            width: 20px;
+            text-align: center;
+        }
+
+        .user-profile {
+            padding: 24px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: auto;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 280px;
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 32px;
+        }
+
+        .page-title {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-dark);
+        }
+
+        .btn-outline {
+            background: transparent;
+            border: 2px solid var(--border);
+            color: var(--text-primary);
+        }
+
+        .btn-outline:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        /* Profile Container */
+        .profile-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        /* Profile Header */
+        .profile-header {
+            background: var(--card-bg);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 4px 6px var(--shadow);
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+            text-align: center;
+        }
+
+        .profile-avatar {
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--primary), var(--accent));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 3rem;
+            margin: 0 auto 24px;
+            color: white;
+            box-shadow: 0 8px 25px rgba(37, 99, 235, 0.3);
+        }
+
+        .profile-name {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .profile-email {
+            color: var(--text-secondary);
+            font-size: 1.2rem;
+            margin-bottom: 24px;
+        }
+
+        .profile-bio {
+            color: var(--text-primary);
+            line-height: 1.6;
+            max-width: 500px;
+            margin: 0 auto 24px;
+        }
+
+        .profile-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+
+        .stat-item {
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin-bottom: 4px;
+        }
+
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Tabs */
+        .profile-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            border-bottom: 2px solid var(--border);
+            padding-bottom: 16px;
+        }
+
+        .tab {
+            padding: 12px 24px;
+            border-radius: 24px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 500;
+            font-size: 1rem;
+        }
+
+        .tab:hover {
+            background: var(--secondary);
+        }
+
+        .tab.active {
+            background: var(--primary);
+            color: white;
+        }
+
+        /* Tab Content */
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Settings Sections */
+        .settings-section {
+            background: var(--card-bg);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 4px 6px var(--shadow);
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title i {
+            color: var(--primary);
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .form-input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-input:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .form-textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid var(--border);
+            border-radius: 8px;
+            font-size: 1rem;
+            resize: vertical;
+            min-height: 100px;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+        }
+
+        .notification-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .notification-item:last-child {
+            border-bottom: none;
+        }
+
+        .notification-info h4 {
+            font-size: 1rem;
+            margin-bottom: 4px;
+        }
+
+        .notification-info p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 50px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: var(--border);
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: var(--primary);
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(26px);
+        }
+
+        /* Achievements */
+        .achievements-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 16px;
+        }
+
+        .achievement-card {
+            background: var(--secondary);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            border: 2px solid var(--border);
+            transition: all 0.3s ease;
+        }
+
+        .achievement-card.unlocked {
+            border-color: var(--warning);
+            background: linear-gradient(135deg, var(--warning) 0%, rgba(245, 158, 11, 0.1) 100%);
+        }
+
+        .achievement-icon {
+            font-size: 2rem;
+            margin-bottom: 12px;
+        }
+
+        .achievement-card.unlocked .achievement-icon {
+            color: var(--warning);
+        }
+
+        .achievement-title {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .achievement-desc {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        /* Activity Feed */
+        .activity-item {
+            display: flex;
+            gap: 16px;
+            padding: 16px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+
+        .activity-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .activity-content {
+            flex: 1;
+        }
+
+        .activity-action {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .activity-meta {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 240px;
+            }
+            .main-content {
+                margin-left: 240px;
+                padding: 16px;
+            }
+            .profile-header {
+                padding: 24px;
+            }
+            .profile-avatar {
+                width: 80px;
+                height: 80px;
+                font-size: 2rem;
+            }
+            .profile-name {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="dashboard-container">
+
+    <!-- Sidebar -->
+    <div class="sidebar">
+        <div class="logo">
+            <h1>planHub</h1>
+        </div>
+
+        <nav class="nav-menu">
+            <div class="nav-item">
+                <i class="fas fa-home"></i>
+                <span>首页</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-calendar-check"></i>
+                <span>我的计划</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-users"></i>
+                <span>社区</span>
+            </div>
+            <div class="nav-item">
+                <i class="fas fa-search"></i>
+                <span>搜索</span>
+            </div>
+            <div class="nav-item active">
+                <i class="fas fa-user-circle"></i>
+                <span>个人中心</span>
+            </div>
+        </nav>
+
+        <div class="user-profile">
+            <div class="user-info">
+                <div class="avatar">张</div>
+                <div>
+                    <div style="font-weight: 600;">张三</div>
+                    <div style="color: #94a3b8; font-size: 0.9rem;">zhang@example.com</div>
+                </div>
+            </div>
+            <button class="btn" style="margin-top: 16px; background: transparent; border: 2px solid rgba(255,255,255,0.2); color: white; width: 100%; padding: 10px;">
+                <i class="fas fa-sign-out-alt"></i>
+                退出登录
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <div class="header">
+            <h1 class="page-title">个人中心</h1>
+            <button class="btn btn-primary">
+                <i class="fas fa-edit"></i>
+                编辑资料
+            </button>
+        </div>
+
+        <!-- Profile Container -->
+        <div class="profile-container">
+            <!-- Profile Header -->
+            <div class="profile-header">
+                <div class="profile-avatar">张</div>
+                <h2 class="profile-name">张三</h2>
+                <p class="profile-email">zhang@example.com</p>
+                <p class="profile-bio">
+                    专注前端开发的学习者和实践者，喜欢分享技术心得和健身经验。相信通过制定计划并坚持执行，每个人都能达成自己的目标。
+                </p>
+                <div class="profile-stats">
+                    <div class="stat-item">
+                        <div class="stat-number">12</div>
+                        <div class="stat-label">总计划数</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">92%</div>
+                        <div class="stat-label">完成率</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">45</div>
+                        <div class="stat-label">连续打卡</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">28</div>
+                        <div class="stat-label">社区贡献</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tabs -->
+            <div class="profile-tabs">
+                <div class="tab active" onclick="showTab('overview')">概览</div>
+                <div class="tab" onclick="showTab('achievements')">成就</div>
+                <div class="tab" onclick="showTab('activity')">活动</div>
+                <div class="tab" onclick="showTab('settings')">设置</div>
+            </div>
+
+            <!-- Tab Content -->
+            <div id="overview" class="tab-content active">
+                <div class="settings-section">
+                    <h3 class="section-title">
+                        <i class="fas fa-chart-line"></i>
+                        本月统计
+                    </h3>
+                    <div class="profile-stats" style="grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));">
+                        <div class="stat-item">
+                            <div class="stat-number">8</div>
+                            <div class="stat-label">新创建</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number">6</div>
+                            <div class="stat-label">已完成</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number">24</div>
+                            <div class="stat-label">打卡次数</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-number">156</div>
+                            <div class="stat-label">社区点赞</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="achievements" class="tab-content">
+                <div class="settings-section">
+                    <h3 class="section-title">
+                        <i class="fas fa-trophy"></i>
+                        我的成就
+                    </h3>
+                    <div class="achievements-grid">
+                        <div class="achievement-card unlocked">
+                            <div class="achievement-icon">
+                                <i class="fas fa-fire"></i>
+                            </div>
+                            <div class="achievement-title">连续打卡王</div>
+                            <div class="achievement-desc">连续打卡30天</div>
+                        </div>
+                        <div class="achievement-card unlocked">
+                            <div class="achievement-icon">
+                                <i class="fas fa-book-open"></i>
+                            </div>
+                            <div class="achievement-title">学习达人</div>
+                            <div class="achievement-desc">完成5个学习计划</div>
+                        </div>
+                        <div class="achievement-card unlocked">
+                            <div class="achievement-icon">
+                                <i class="fas fa-heart"></i>
+                            </div>
+                            <div class="achievement-title">社区之星</div>
+                            <div class="achievement-desc">获得100个赞</div>
+                        </div>
+                        <div class="achievement-card">
+                            <div class="achievement-icon">
+                                <i class="fas fa-crown"></i>
+                            </div>
+                            <div class="achievement-title">完美主义者</div>
+                            <div class="achievement-desc">所有计划100%完成</div>
+                        </div>
+                        <div class="achievement-card">
+                            <div class="achievement-icon">
+                                <i class="fas fa-star"></i>
+                            </div>
+                            <div class="achievement-title">早起鸟</div>
+                            <div class="achievement-desc">连续早于7点开始计划</div>
+                        </div>
+                        <div class="achievement-card">
+                            <div class="achievement-icon">
+                                <i class="fas fa-comments"></i>
+                            </div>
+                            <div class="achievement-title">分享专家</div>
+                            <div class="achievement-desc">发布50篇高质量帖子</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="activity" class="tab-content">
+                <div class="settings-section">
+                    <h3 class="section-title">
+                        <i class="fas fa-history"></i>
+                        最近活动
+                    </h3>
+                    <div class="activity-feed">
+                        <div class="activity-item">
+                            <div class="activity-icon">
+                                <i class="fas fa-check"></i>
+                            </div>
+                            <div class="activity-content">
+                                <div class="activity-action">完成了计划 "学习 React Hooks"</div>
+                                <div class="activity-meta">2小时前 • 获得了 "学习达人" 成就</div>
+                            </div>
+                        </div>
+                        <div class="activity-item">
+                            <div class="activity-icon">
+                                <i class="fas fa-heart"></i>
+                            </div>
+                            <div class="activity-content">
+                                <div class="activity-action">收到了15个赞</div>
+                                <div class="activity-meta">5小时前 • 来自社区用户的喜爱</div>
+                            </div>
+                        </div>
+                        <div class="activity-item">
+                            <div class="activity-icon">
+                                <i class="fas fa-calendar-check"></i>
+                            </div>
+                            <div class="activity-content">
+                                <div class="activity-action">打卡了 "健身训练"</div>
+                                <div class="activity-meta">1天前 • 连续打卡第25天</div>
+                            </div>
+                        </div>
+                        <div class="activity-item">
+                            <div class="activity-icon">
+                                <i class="fas fa-comment"></i>
+                            </div>
+                            <div class="activity-content">
+                                <div class="activity-action">发布了新帖子 "React学习心得"</div>
+                                <div class="activity-meta">2天前 • 获得了32个赞</div>
+                            </div>
+                        </div>
+                        <div class="activity-item">
+                            <div class="activity-icon">
+                                <i class="fas fa-trophy"></i>
+                            </div>
+                            <div class="activity-content">
+                                <div class="activity-action">解锁了新成就 "连续打卡王"</div>
+                                <div class="activity-meta">3天前 • 恭喜达成30天连续打卡</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="settings" class="tab-content">
+                <div class="settings-section">
+                    <h3 class="section-title">
+                        <i class="fas fa-user"></i>
+                        基本信息
+                    </h3>
+                    <div class="form-group">
+                        <label class="form-label">姓名</label>
+                        <input type="text" class="form-input" value="张三">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">邮箱</label>
+                        <input type="email" class="form-input" value="zhang@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">个人简介</label>
+                        <textarea class="form-textarea" placeholder="介绍一下你自己...">专注前端开发的学习者和实践者，喜欢分享技术心得和健身经验。相信通过制定计划并坚持执行，每个人都能达成自己的目标。</textarea>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3 class="section-title">
+                        <i class="fas fa-bell"></i>
+                        通知设置
+                    </h3>
+                    <div class="notification-item">
+                        <div class="notification-info">
+                            <h4>计划提醒</h4>
+                            <p>在计划截止前发送提醒通知</p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="notification-item">
+                        <div class="notification-info">
+                            <h4>社区动态</h4>
+                            <p>当关注的用户发布新内容时通知我</p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="notification-item">
+                        <div class="notification-info">
+                            <h4>成就通知</h4>
+                            <p>解锁新成就时发送庆祝通知</p>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3 class="section-title">
+                        <i class="fas fa-palette"></i>
+                        偏好设置
+                    </h3>
+                    <div class="form-group">
+                        <label class="form-label">主题颜色</label>
+                        <select class="form-input">
+                            <option>蓝色</option>
+                            <option>绿色</option>
+                            <option>紫色</option>
+                            <option>橙色</option>
+                        </select>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="darkMode" checked>
+                        <label for="darkMode">深色模式</label>
+                    </div>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="autoSave">
+                        <label for="autoSave">自动保存草稿</label>
+                    </div>
+                </div>
+
+                <div class="settings-section" style="text-align: center;">
+                    <button class="btn btn-danger" style="background: var(--danger);">
+                        <i class="fas fa-sign-out-alt"></i>
+                        退出登录
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function showTab(tabName) {
+        // Hide all tab contents
+        document.querySelectorAll('.tab-content').forEach(content => {
+            content.classList.remove('active');
+        });
+
+        // Remove active class from all tabs
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.classList.remove('active');
+        });
+
+        // Show selected tab content and activate tab
+        document.getElementById(tabName).classList.add('active');
+        event.target.classList.add('active');
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize switches
+        const switches = document.querySelectorAll('.switch input');
+        switches.forEach(switchEl => {
+            switchEl.addEventListener('change', function() {
+                console.log(`Notification ${this.checked ? 'enabled' : 'disabled'}`);
+            });
+        });
+
+        // Form submission
+        const form = document.querySelector('#settings .settings-section:first-child form');
+        if (form) {
+            form.addEventListener('submit', function(e) {
+                e.preventDefault();
+                alert('个人资料已更新！');
+            });
+        }
+    });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" 
+"http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.planhub.mapper.PlanMapper">
+    
+    <resultMap id="BaseResultMap" type="com.planhub.entity.Plan">
+        <id column="id" property="id" />
+        <result column="user_id" property="userId" />
+        <result column="title" property="title" />
+        <result column="description" property="description" />
+        <result column="category" property="category" />
+        <result column="priority" property="priority" />
+        <result column="status" property="status" />
+        <result column="target_date" property="targetDate" />
+        <result column="start_date" property="startDate" />
+        <result column="estimated_duration_hours" property="estimatedDurationHours" />
+        <result column="actual_duration_hours" property="actualDurationHours" />
+        <result column="progress_percentage" property="progressPercentage" />
+        <result column="tags" property="tags" />
+        <result column="cover_image_url" property="coverImageUrl" />
+        <result column="reminder_settings" property="reminderSettings" />
+        <result column="sharing_settings" property="sharingSettings" />
+        <result column="visibility" property="visibility" />
+        <result column="completion_criteria" property="completionCriteria" />
+        <result column="created_at" property="createdAt" />
+        <result column="updated_at" property="updatedAt" />
+        <result column="completed_at" property="completedAt" />
+    </resultMap>
+    
+    <select id="selectByTitleContainingOrDescriptionContainingAndVisibility" resultMap="BaseResultMap">
+        SELECT * FROM plans p 
+        WHERE p.deleted_at IS NULL AND (p.title LIKE CONCAT('%', #{title}, '%') OR p.description LIKE CONCAT('%', #{description}, '%'))
+        AND LOWER(p.visibility) = LOWER(#{visibility})
+    </select>
+    
+    <select id="selectByTitleContainingOrDescriptionContaining" resultMap="BaseResultMap">
+        SELECT * FROM plans p 
+        WHERE p.deleted_at IS NULL AND (p.title LIKE CONCAT('%', #{title}, '%') OR p.description LIKE CONCAT('%', #{description}, '%'))
+    </select>
+    
+    <select id="selectByUserIdAndTitleContainingOrUserIdAndDescriptionContaining" resultMap="BaseResultMap">
+        SELECT * FROM plans p 
+        WHERE p.deleted_at IS NULL AND ((p.user_id = #{userId1} AND p.title LIKE CONCAT('%', #{title}, '%'))
+        OR (p.user_id = #{userId2} AND p.description LIKE CONCAT('%', #{description}, '%')))
+    </select>
+    
+    <select id="selectByVisibilityAndTitleContainingOrVisibilityAndDescriptionContaining" resultMap="BaseResultMap">
+        SELECT * FROM plans p 
+        WHERE p.deleted_at IS NULL AND ((LOWER(p.visibility) = LOWER(#{visibility1}) AND p.title LIKE CONCAT('%', #{title}, '%'))
+        OR (LOWER(p.visibility) = LOWER(#{visibility2}) AND p.description LIKE CONCAT('%', #{description}, '%')))
+    </select>
+    
+    <select id="selectByUserIdAndVisibilityAndTitleContainingOrUserIdAndVisibilityAndDescriptionContaining" resultMap="BaseResultMap">
+        SELECT * FROM plans p 
+        WHERE p.deleted_at IS NULL AND ((p.user_id = #{userId1} AND LOWER(p.visibility) = LOWER(#{visibility1}) AND p.title LIKE CONCAT('%', #{title}, '%'))
+        OR (p.user_id = #{userId2} AND LOWER(p.visibility) = LOWER(#{visibility2}) AND p.description LIKE CONCAT('%', #{description}, '%')))
+    </select>
+    
+    <select id="selectByVisibilityAndUserIdNotAndTitleContainingOrVisibilityAndUserIdNotAndDescriptionContaining" resultMap="BaseResultMap">
+        SELECT * FROM plans p 
+        WHERE p.deleted_at IS NULL AND ((LOWER(p.visibility) = LOWER(#{visibility1}) AND p.user_id != #{userId1} AND p.title LIKE CONCAT('%', #{title}, '%'))
+        OR (LOWER(p.visibility) = LOWER(#{visibility2}) AND p.user_id != #{userId2} AND p.description LIKE CONCAT('%', #{description}, '%')))
+    </select>
+    
+</mapper>
