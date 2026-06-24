@@ -659,10 +659,17 @@ def check_in_plan(plan_id: str) -> str:
         return f"打卡失败：{error_msg}"
 
     # 打卡成功，返回带跳转链接的消息（格式与搜索结果一致）
-    # 前端正则：/(\d+)\.\s+(.+?)\n\s+\[查看详情\]\(\/(plan|post)\/(\d+)\)/g
+    # 前端正则匹配 [text](/plan/id) 格式
     inner_data = result.get("data", {})
     checkin_data = inner_data.get("data", {}) if isinstance(inner_data, dict) else {}
     plan_title = checkin_data.get("title", "计划")
+
+    # 优先从全局变量获取真实标题
+    for p in _last_unchecked_plans:
+        if str(p.get("real_id")) == str(plan_id) or str(p.get("display_id")) == str(plan_id):
+            plan_title = p.get("title", plan_title)
+            break
+
     return (
         f"打卡成功！已完成今日打卡\n\n"
         f"  1. {plan_title}\n"
