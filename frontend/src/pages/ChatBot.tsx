@@ -21,6 +21,7 @@ const ChatBot: React.FC = () => {
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string; timestamp?: string }[]>([]);
   const [input, setInput] = useState('');
   const [sessionId, setSessionId] = useState<string>('');
+  const sessionIdRef = useRef<string>(''); // 同步引用，避免闭包读到旧值
   const [isLoading, setIsLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState('');
   const [showHistory, setShowHistory] = useState(true);
@@ -37,6 +38,61 @@ const ChatBot: React.FC = () => {
 
   // 计划生成相关状态
   const [usePlanMode, setUsePlanMode] = useState(false);  // 是否启用计划生成模式
+
+  // 解析消息内容，将 [text](/path) 和裸 /plan/123 /post/456 转为可点击链接
+  const parseMessageContent = (content: string) => {
+    console.log('[parseMessageContent] raw:', JSON.stringify(content));
+    const parts: (string | JSX.Element)[] = [];
+    let lastIndex = 0;
+    let keyIdx = 0;
+
+    const makeBtn = (label: string, type: string, id: string) => {
+      const path = `/${type}/${id}`;
+      return (
+        <button key={`link-${keyIdx++}`} onClick={() => navigate(path)} style={{
+          background: 'none', border: 'none',
+          color: type === 'plan' ? '#667eea' : '#10b981',
+          cursor: 'pointer', textDecoration: 'underline', padding: '2px 4px',
+          fontSize: 'inherit', fontFamily: 'inherit', borderRadius: '4px',
+          fontWeight: 500,
+        }}>
+          {label}
+        </button>
+      );
+    };
+
+    // 匹配 markdown 链接 [显示文字](/plan/123) — 允许多行和任意空白
+    const mdLinkRegex = /\[([^\]]+)\]\(\s*\/(plan|post)\/(\d+)\s*\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = mdLinkRegex.exec(content)) !== null) {
+      console.log('[parseMessageContent] md match:', match[0]);
+      if (match.index > lastIndex) {
+        parts.push(content.slice(lastIndex, match.index));
+      }
+      parts.push(makeBtn(match[1], match[2], match[3]));
+      lastIndex = match.index + match[0].length;
+    }
+
+    // 匹配裸路径 /plan/123 或 /post/456
+    const remaining = content.slice(lastIndex);
+    let bareLastIndex = 0;
+    const barePathRegex = /(^|\s)\/(plan|post)\/(\d+)(?=[\s，。！？,!?]|$)/g;
+    while ((match = barePathRegex.exec(remaining)) !== null) {
+      console.log('[parseMessageContent] bare match:', match[0]);
+      if (match.index > bareLastIndex) {
+        parts.push(remaining.slice(bareLastIndex, match.index));
+      }
+      parts.push(makeBtn(`/${match[2]}/${match[3]}`, match[2], match[3]));
+      bareLastIndex = match.index + match[0].length;
+    }
+    if (bareLastIndex < remaining.length) {
+      parts.push(remaining.slice(bareLastIndex));
+    }
+
+    const result = parts.length > 0 ? <>{parts}</> : content;
+    console.log('[parseMessageContent] result parts:', parts.length);
+    return result;
+  };
 
   // 获取带 JWT Token 的请求 Header
   const getAuthHeaders = () => {
@@ -216,22 +272,20 @@ const ChatBot: React.FC = () => {
 
     try {
       const userId = user?.id || 'anonymous';
-      let currentSessionId: string;
-
-      if (sessionId) {
-        currentSessionId = sessionId;
-      } else {
+      // 使用 ref 同步 session_id，避免 React state 异步更新导致闭包读到旧值
+      let currentSessionId = sessionIdRef.current;
+      if (!currentSessionId) {
         currentSessionId = `chat:${userId}:${userId}_chat_${Date.now()}`;
+        sessionIdRef.current = currentSessionId;
+        setSessionId(currentSessionId);
       }
-
-      setSessionId(currentSessionId);
 
       let fullResponse = '';
       let useRagFallback = false;
 
       // ─── 计划生成模式（可叠加 RAG）──────────────────────────────
       if (usePlanMode) {
-        console.log(`[DEBUG] Plan mode enabled, useRag=${useRag}`);
+        console.log(`[DEBUG] Plan mode enabled, useRag=${useRag}, sessionId=${currentSessionId}`);
 
         const planResponse = await fetch(`${AI_API_BASE}/chat/plan`, {
           method: 'POST',
@@ -248,6 +302,12 @@ const ChatBot: React.FC = () => {
         if (planResponse.ok) {
           const planData = await planResponse.json();
           fullResponse = planData.response || planData.message || '生成计划失败';
+
+          // 同步更新 ref 和 state，确保后续请求使用 Python 返回的 session_id
+          if (planData.session_id && planData.session_id !== currentSessionId) {
+            sessionIdRef.current = planData.session_id;
+            setSessionId(planData.session_id);
+          }
 
           // 一次性显示结果（不逐字模拟流式）
           setMessages(prev => [...prev, { role: 'assistant', content: fullResponse, timestamp: new Date().toISOString() }]);
@@ -650,7 +710,7 @@ const ChatBot: React.FC = () => {
                       )}
                     </div>
                     <div style={{ ...styles.messageContent, ...(msg.role === 'user' ? styles.userMessageContent : styles.assistantMessageContent) }}>
-                      {msg.content}
+                      {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
                       {msg.timestamp && (
                         <span style={styles.messageTime}>{formatTime(msg.timestamp)}</span>
                       )}
@@ -663,7 +723,7 @@ const ChatBot: React.FC = () => {
                       <Bot size={36} color="#000000" />
                     </div>
                     <div style={styles.assistantMessageContent}>
-                      {streamingContent}
+                      {parseMessageContent(streamingContent)}
                       <span style={styles.cursor}>▊</span>
                     </div>
                   </div>

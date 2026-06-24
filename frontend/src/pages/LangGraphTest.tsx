@@ -52,6 +52,56 @@ const LangGraphTest = () => {
   const CONVERSATIONS_API = 'http://localhost:8080/api/ai/conversations';
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // 解析消息内容，将 [text](/path) 和裸 /plan/123 /post/456 转为可点击链接
+  const parseMessageContent = (content: string) => {
+    const parts: (string | JSX.Element)[] = [];
+    let lastIndex = 0;
+    let keyIdx = 0;
+
+    const makeBtn = (label: string, type: string, id: string) => {
+      const path = `/${type}/${id}`;
+      return (
+        <button key={`link-${keyIdx++}`} onClick={() => navigate(path)} style={{
+          background: 'none', border: 'none',
+          color: type === 'plan' ? '#667eea' : '#10b981',
+          cursor: 'pointer', textDecoration: 'underline', padding: '2px 4px',
+          fontSize: 'inherit', fontFamily: 'inherit', borderRadius: '4px',
+          fontWeight: 500,
+        }}>
+          {label}
+        </button>
+      );
+    };
+
+    // 匹配 markdown 链接 [显示文字](/plan/123) 或 [显示文字](/post/456)
+    const mdLinkRegex = /\[([^\]]+)\]\(\s*\/(plan|post)\/(\d+)\s*\)/g;
+    let match: RegExpExecArray | null;
+    while ((match = mdLinkRegex.exec(content)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(content.slice(lastIndex, match.index));
+      }
+      parts.push(makeBtn(match[1], match[2], match[3]));
+      lastIndex = match.index + match[0].length;
+    }
+
+    // 匹配裸路径 /plan/123 或 /post/456
+    const remaining = content.slice(lastIndex);
+    let bareLastIndex = 0;
+    const barePathRegex = /(^|\s)\/(plan|post)\/(\d+)(?=[\s，。！？,!?]|$)/g;
+    while ((match = barePathRegex.exec(remaining)) !== null) {
+      if (match.index > bareLastIndex) {
+        parts.push(remaining.slice(bareLastIndex, match.index));
+      }
+      parts.push(makeBtn(`/${match[2]}/${match[3]}`, match[2], match[3]));
+      bareLastIndex = match.index + match[0].length;
+    }
+    if (bareLastIndex < remaining.length) {
+      parts.push(remaining.slice(bareLastIndex));
+    }
+
+    return parts.length > 0 ? <>{parts}</> : content;
+  };
+
   // 知识库相关状态
   const [documents, setDocuments] = useState<any[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<number[]>([]);
@@ -591,7 +641,7 @@ const LangGraphTest = () => {
                     )}
 
                     <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {msg.content}
+                      {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
                     </div>
                     {msg.timestamp && (
                       <span style={styles.messageTime}>{formatTime(msg.timestamp)}</span>

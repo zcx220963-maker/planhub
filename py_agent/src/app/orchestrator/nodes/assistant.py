@@ -40,9 +40,13 @@ def get_guidance_for_input(user_input: str) -> str:
     if "搜索" in user_input_lower or user_input_lower in ["搜索", "搜", "找"]:
         return GUIDANCE_TEMPLATES["search"]
 
-    # 打卡相关
+    # 打卡相关（包括纯数字输入，可能是选择序号）
     if "打卡" in user_input_lower or user_input_lower in ["打卡", "打卡", "今日打卡"]:
         return GUIDANCE_TEMPLATES["checkin"]
+
+    # 纯数字输入 → 可能是选择计划序号，不追加引导
+    if user_input_lower.isdigit():
+        return ""
 
     # 发帖相关
     if "发帖" in user_input_lower or user_input_lower in ["发帖", "发帖子", "发布"]:
@@ -78,9 +82,12 @@ async def assistant_node(state) -> dict:
         )
 
         # 检查结果是否太短或像是默认回复，如果是则添加引导
-        if result and len(result) < 50:
+        # 打卡成功消息约40-50字符，不应追加引导；只有真正需要引导时才追加
+        if result and len(result) < 30:
             # 可能需要添加引导
-            result = result + "\n\n" + get_guidance_for_input(user_input)
+            guidance = get_guidance_for_input(user_input)
+            if guidance:
+                result = result + "\n\n" + guidance
 
         # 更新状态
         return {

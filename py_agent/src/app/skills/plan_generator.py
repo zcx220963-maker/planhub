@@ -493,15 +493,18 @@ class PlanInfoCollectorManager:
             try:
                 data = self.redis.get(redis_key)
                 if data:
-                    print(f"[DEBUG] Found collector in Redis: {redis_key}")
+                    print(f"[DEBUG] Found collector in Redis: {redis_key}, data_len={len(data)}")
                     collector_dict = json.loads(data)
                     collector = PlanInfoCollector.from_dict(collector_dict)
+                    print(f"[DEBUG] Restored collector: plan_type={collector.plan_type}, info={collector.collected_info}, complete={collector.is_complete()}")
                     self._memory_cache[session_id] = collector  # 缓存到内存
                     return collector
                 else:
                     print(f"[DEBUG] No collector found in Redis: {redis_key}")
             except Exception as e:
                 print(f"[ERROR] Failed to get collector from Redis: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print(f"[WARNING] Redis client is None, cannot get collector")
 
@@ -518,10 +521,13 @@ class PlanInfoCollectorManager:
             redis_key = f"plan:collector:{session_id}"
             try:
                 collector_dict = collector.to_dict()
-                self.redis.setex(redis_key, self.ttl, json.dumps(collector_dict))
-                print(f"[DEBUG] Saved collector to Redis: {redis_key}, TTL: {self.ttl}")
+                json_str = json.dumps(collector_dict, ensure_ascii=False)
+                self.redis.setex(redis_key, self.ttl, json_str)
+                print(f"[DEBUG] Saved collector to Redis: {redis_key}, TTL: {self.ttl}, json_len={len(json_str)}")
             except Exception as e:
                 print(f"[ERROR] Failed to save collector to Redis: {e}")
+                import traceback
+                traceback.print_exc()
         else:
             print(f"[WARNING] Redis client is None, cannot save collector")
 

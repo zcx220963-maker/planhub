@@ -60,14 +60,18 @@ async def plan_generator_node(state) -> dict:
             is_first_trigger = True
             print(f"[DEBUG] plan_generator: is_first_trigger = True (collector is None)")
         else:
-            # 如果用户输入是新的计划类型触发词，删除旧的 collector
+            # 如果用户输入是新的计划类型触发词（且与当前 collector 类型不同），删除旧的 collector
             plan_type_check = detect_plan_type(user_input)
-            print(f"[DEBUG] plan_generator: plan_type_check = {plan_type_check}")
+            print(f"[DEBUG] plan_generator: plan_type_check = {plan_type_check}, collector.plan_type = {collector.plan_type if collector else None}")
             if plan_type_check and plan_type_check != "unknown" and not plan_type_check.startswith("__AMBIGUOUS__"):
-                manager.delete_collector(session_id)
-                collector = None
-                is_first_trigger = True
-                print(f"[DEBUG] plan_generator: is_first_trigger = True (new plan type detected)")
+                # 只有当计划类型发生变化时才重建 collector
+                if collector.plan_type != plan_type_check:
+                    manager.delete_collector(session_id)
+                    collector = None
+                    is_first_trigger = True
+                    print(f"[DEBUG] plan_generator: is_first_trigger = True (plan type changed: {collector.plan_type if collector else None} -> {plan_type_check})")
+                else:
+                    print(f"[DEBUG] plan_generator: plan_type unchanged ({plan_type_check}), keeping existing collector")
         
         if collector is None:
             # 新的计划请求 - 检测计划类型
