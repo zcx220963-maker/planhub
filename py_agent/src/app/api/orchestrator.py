@@ -117,9 +117,21 @@ class _RedisCheckpointer(BaseCheckpointSaver):
         t = await self.aget_tuple(config)
         return t.checkpoint if t else {}
 
+    def get_next_version(self, current, channel):
+        """生成下一个 channel 版本号（兼容新版 LangGraph）"""
+        import random
+        if current is None:
+            current_v = 0
+        elif isinstance(current, int):
+            current_v = current
+        else:
+            current_v = int(str(current).split(".")[0])
+        next_v = current_v + 1
+        next_h = random.random()
+        return f"{next_v:032}.{next_h:016}"
+
     async def aget_next_version(self, current, channel):
-        from langgraph.checkpoint.base import get_next_version
-        return get_next_version(current, channel)
+        return self.get_next_version(current, channel)
 
 
 def _get_checkpointer():
@@ -362,45 +374,132 @@ async def orchestrate_chat(request: Request, body: OrchestrateRequest):
 
 
 @router.post("/stream")
-async def orchestrate_stream(request: OrchestrateRequest):
+async def orchestrate_stream(request: Request, body: OrchestrateRequest):
     """
     流式输出版本
 
-    使用SSE协议实时推送Agent执行过程
+    SSE 协议实时推送：
+    - response 事件：节点输出快照（content 为当前完整响应文本）
+    - trace 事件：节点执行轨迹（用于前端调试面板）
+    - done 事件：流程结束，包含完整响应 + session_id + execution_trace
+
+    前端处理：
+    1. 收到 response 事件 → 更新或追加 assistant 消息内容
+    2. 收到 trace 事件 → 追加到 debug 面板
+    3. 收到 done 事件 → 保存 session_id，标记流式结束
     """
-    # 生成或使用session_id
-    session_id = request.session_id or generate_session_id()
-    
+    # 从请求 Header 获取 Authorization token
+    authorization = request.headers.get("Authorization")
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+
+    from app.common.llm_factory import set_request_token
+    set_request_token(token)
+
+    from app.common.langchain_tools import reset_tool_call_counts
+    reset_tool_call_counts()
+
+    session_id = body.session_id or generate_session_id()
+    graph = get_graph()
+    thread_id = get_thread_id(session_id)
+
+    capabilities_dict = body.capabilities.dict() if hasattr(body.capabilities, 'dict') else dict(body.capabilities)
+    selected_doc_ids = body.doc_ids if body.doc_ids else capabilities_dict.get("selected_doc_ids", [])
+    selected_doc_ids = [str(did) for did in selected_doc_ids] if selected_doc_ids else []
+
+    invoke_input = {
+        "user_input": body.message,
+        "session_id": session_id,
+        "user_id": str(body.user_id) if body.user_id is not None else None,
+        "capabilities": capabilities_dict,
+        "selected_doc_ids": selected_doc_ids,
+        "rag_fallback_to_chat": False,
+    }
+
+    # checkpoint 不存在时尝试从 Redis 会话历史重建
+    if _checkpointer:
+        try:
+            existing_tuple = await _checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+            if not existing_tuple:
+                restored = _restore_state_from_history(session_id)
+                if restored:
+                    invoke_input.update(restored)
+                    log_stream_restore = True
+                else:
+                    log_stream_restore = False
+            else:
+                log_stream_restore = False
+        except Exception:
+            log_stream_restore = False
+    else:
+        log_stream_restore = False
+
     async def event_generator():
         try:
-            # 获取图（带checkpointer）
-            graph = get_graph()
-            thread_id = get_thread_id(session_id)
+            accumulated_trace = []
+            final_response_text = ""
+            seen_response_text = ""
 
-            # 流式执行（使用thread_id持久化状态）
-            # 只传入新的 user_input，LangGraph 会自动从 checkpointer 恢复之前的状态
-            async for event in graph.astream_events(
-                {
-                    "user_input": request.message,
-                    "session_id": session_id,
-                    "user_id": str(request.user_id) if request.user_id is not None else None,
-                    "capabilities": request.capabilities.dict() if hasattr(request.capabilities, 'dict') else dict(request.capabilities),
-                },
-                config={"configurable": {"thread_id": thread_id}}
+            async for chunk in graph.astream(
+                invoke_input,
+                config={"configurable": {"thread_id": thread_id}},
+                stream_mode=["updates", "values"]
             ):
-                # 格式化事件
-                event_data = {
-                    "type": event.get("event", "unknown"),
-                    "name": event.get("name", "unknown"),
-                    "data": str(event.get("data", {}))[:200]
-                }
-                yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                stream_type, payload = chunk
+
+                if stream_type == "updates":
+                    # 每个节点完成后推送一次 response 事件
+                    # payload 是 {node_name: {agent_output: "...", execution_trace: [...]}} 这样的结构
+                    for node_name, node_output in payload.items():
+                        if not isinstance(node_output, dict):
+                            continue
+
+                        # 提取 response 文本
+                        response_text = (
+                            node_output.get("final_response") or
+                            node_output.get("agent_output") or
+                            ""
+                        )
+
+                        # 只在有新的响应内容时推送
+                        if response_text and response_text != seen_response_text:
+                            seen_response_text = response_text
+                            final_response_text = response_text
+                            yield f"event: response\ndata: {json.dumps({'content': response_text, 'node': node_name}, ensure_ascii=False)}\n\n"
+
+                        # 提取 execution_trace（如果此节点新增了轨迹）
+                        trace = node_output.get("execution_trace")
+                        if trace:
+                            new_traces = []
+                            for t in trace:
+                                if t not in accumulated_trace:
+                                    accumulated_trace.append(t)
+                                    new_traces.append(t)
+                            if new_traces:
+                                yield f"event: trace\ndata: {json.dumps({'traces': new_traces}, ensure_ascii=False)}\n\n"
+
+                            # 第一个节点完成后推送 accumulate 标记，让前端知道流程开始
+                            if log_stream_restore and new_traces:
+                                yield f"event: restore\ndata: {'{}'}\n\n"
+
+                elif stream_type == "values":
+                    # state 快照，可以用于提取更多信息（暂时不用）
+                    pass
+
+            # 流程结束，推送 done 事件
+            # 确保至少有一条 response
+            if not final_response_text:
+                # 如果上面没有从 updates 捕获到 response，从 values 的最后 state 里取
+                final_response_text = "处理完成"
+
+            yield f"event: done\ndata: {json.dumps({'response': final_response_text, 'session_id': session_id, 'execution_trace': accumulated_trace, 'intent': execution_trace_to_intent(accumulated_trace)}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
-            error_data = {"error": str(e)}
-            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'detail': str(e)}, ensure_ascii=False)}\n\n"
 
-    # 关键：设置正确的SSE响应头，防止Nginx缓冲
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -410,6 +509,20 @@ async def orchestrate_stream(request: OrchestrateRequest):
             "Connection": "keep-alive"
         }
     )
+
+
+def execution_trace_to_intent(trace: list) -> str:
+    """从 execution_trace 推断 intent 名称（供 done 事件返回给前端）"""
+    for t in trace:
+        if isinstance(t, dict) and t.get("node"):
+            node = t["node"]
+            if node == "supervisor":
+                return t.get("intent", "unknown")
+            if node.startswith("plan_"):
+                return "plan_creation"
+            if node in ("chat", "assistant", "rag"):
+                return node
+    return "unknown"
 
 
 @router.post("/cancel")

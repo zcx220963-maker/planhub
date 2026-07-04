@@ -40,6 +40,7 @@ interface Message {
   executionTrace?: any[];
   blockedByCapability?: boolean;
   handoffReason?: string;
+  isStreaming?: boolean;
 }
 
 interface DebugInfo {
@@ -410,12 +411,20 @@ const LangGraphTest = () => {
       timestamp: new Date().toISOString()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    // 先插入一条空的 assistant 消息，流式过程中实时更新它
+    const streamingMsg: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true
+    };
+
+    setMessages(prev => [...prev, userMessage, streamingMsg]);
     setQuery('');
     setIsLoading(true);
 
     try {
-      const response = await fetch(`${AI_API_BASE}/orchestrator/chat`, {
+      const response = await fetch(`${AI_API_BASE}/orchestrator/stream`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
@@ -426,47 +435,130 @@ const LangGraphTest = () => {
         })
       });
 
-      if (response.ok) {
-        const data = await response.json();
-
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: data.response || '',
-          timestamp: new Date().toISOString(),
-          intent: data.intent || undefined,
-          confidence: data.confidence || 0,
-          executionTrace: data.execution_trace || [],
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || undefined
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        setSessionId(data.session_id || '');
-
-        setDebugInfo({
-          intent: data.intent || '',
-          confidence: data.confidence || 0,
-          selectedAgent: data.intent || '',
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || '',
-          executionTrace: Array.isArray(data.execution_trace) ? data.execution_trace : [],
-          toolsCalled: Array.isArray(data.execution_trace)
-            ? data.execution_trace.flatMap((t: any) => t.tools_called || [])
-            : [],
-          sessionId: data.session_id || '',
-          planMetadata: data.plan_metadata || undefined,
-        });
-      } else {
+      if (!response.ok) {
         throw new Error(`请求失败: ${response.status}`);
+      }
+
+      // 流式读取 SSE
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let lastContent = '';
+      let lastTrace: any[] = [];
+      let finalSessionId = sessionId;
+      let finalIntent = '';
+      let finalConfidence = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // 按 SSE 事件分割（\n\n 为事件分隔符）
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          if (!part.trim()) continue;
+
+          // 解析 SSE 格式：event: xxx\ndata: {...}
+          let eventType = 'message';
+          let dataStr = '';
+
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              dataStr = line.slice(6).trim();
+            }
+          }
+
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+
+            if (eventType === 'response') {
+              // 节点输出快照 → 更新 assistant 消息内容
+              lastContent = data.content || lastContent;
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (newMsgs[lastIdx]?.role === 'assistant') {
+                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent };
+                }
+                return newMsgs;
+              });
+            } else if (eventType === 'trace') {
+              lastTrace = [...lastTrace, ...(data.traces || [])];
+            } else if (eventType === 'done') {
+              // 最终完成
+              lastContent = data.response || lastContent;
+              finalSessionId = data.session_id || finalSessionId;
+              finalIntent = data.intent || '';
+              const execTrace = data.execution_trace || [];
+              lastTrace = execTrace.length > 0 ? execTrace : lastTrace;
+
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (newMsgs[lastIdx]?.role === 'assistant') {
+                  newMsgs[lastIdx] = {
+                    ...newMsgs[lastIdx],
+                    content: lastContent,
+                    isStreaming: false,
+                    intent: finalIntent || undefined,
+                    confidence: finalConfidence || 0,
+                    executionTrace: lastTrace,
+                    blockedByCapability: false,
+                  };
+                }
+                return newMsgs;
+              });
+
+              setSessionId(finalSessionId);
+              setDebugInfo({
+                intent: finalIntent,
+                confidence: finalConfidence,
+                selectedAgent: finalIntent,
+                blockedByCapability: false,
+                handoffReason: '',
+                executionTrace: lastTrace,
+                toolsCalled: lastTrace.flatMap((t: any) => t.tools_called || []),
+                sessionId: finalSessionId,
+                planMetadata: data.plan_metadata || undefined,
+              });
+            } else if (eventType === 'error') {
+              lastContent = `抱歉，发生错误：${data.detail || '未知错误'}`;
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (newMsgs[lastIdx]?.role === 'assistant') {
+                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent, isStreaming: false };
+                }
+                return newMsgs;
+              });
+            }
+          } catch {
+            // JSON 解析失败，按纯文本处理
+          }
+        }
       }
     } catch (error) {
       console.error('Chat error:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        const lastIdx = newMsgs.length - 1;
+        if (newMsgs[lastIdx]?.role === 'assistant') {
+          newMsgs[lastIdx] = {
+            ...newMsgs[lastIdx],
+            content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
+            isStreaming: false
+          };
+        }
+        return newMsgs;
+      });
     } finally {
       setIsLoading(false);
     }
@@ -878,6 +970,9 @@ const LangGraphTest = () => {
 
                     <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                       {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+                      {msg.isStreaming && (
+                        <span style={{ display: 'inline-block', marginLeft: 4, animation: 'blink 1s infinite' }}>▊</span>
+                      )}
                     </div>
                     {msg.timestamp && (
                       <span style={styles.messageTime}>{formatTime(msg.timestamp)}</span>
@@ -887,8 +982,8 @@ const LangGraphTest = () => {
               );
             })}
 
-            {/* 加载状态 */}
-            {isLoading && (
+            {/* 加载状态（仅在非流式且正在加载时显示） */}
+            {isLoading && !messages[messages.length - 1]?.isStreaming && (
               <div style={{ ...styles.message, ...styles.assistantMessage }}>
                 <div style={{ ...styles.avatar, ...styles.assistantAvatar }}>
                   <img src="/robot-icon.png" alt="对话机器人" style={{ width: 36, height: 36 }} />
