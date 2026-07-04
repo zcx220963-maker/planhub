@@ -143,7 +143,7 @@ def _build_api_data_section(api_data: Dict[str, Any], plan_type: str) -> str:
                     author = book.get("author", "未知")
                     sources.append(f"《{title}》- {author}")
             if sources:
-                sections.append(f"📚 书籍来源：\n  " + "\n  ".join(sources))
+                sections.append(f" 书籍来源：\n  " + "\n  ".join(sources))
 
     # 健康计划：展示天气和营养来源
     elif plan_type == "health":
@@ -151,7 +151,7 @@ def _build_api_data_section(api_data: Dict[str, Any], plan_type: str) -> str:
         if "get_weather_forecast" in api_data:
             weather = api_data["get_weather_forecast"]
             if "error" in weather:
-                sections.append(f"🌤️ 天气查询（Open-Meteo）：查询失败 - {weather['error']}")
+                sections.append(f" 天气查询（Open-Meteo）：查询失败 - {weather['error']}")
             elif "forecast" in weather and len(weather["forecast"]) > 0:
                 forecast = weather["forecast"][0]
                 date = forecast.get("date", "未知")
@@ -159,9 +159,9 @@ def _build_api_data_section(api_data: Dict[str, Any], plan_type: str) -> str:
                 min_temp = forecast.get("min_temp", "未知")
                 weather_desc = forecast.get("weather", "未知")
                 city = weather.get("city", "未知")
-                sections.append(f"🌤️ 天气来源（Open-Meteo）：\n  城市：{city}\n  首日预报：{date}\n  温度：{min_temp}°C ~ {max_temp}°C\n  天气：{weather_desc}")
+                sections.append(f" 天气来源（Open-Meteo）：\n  城市：{city}\n  首日预报：{date}\n  温度：{min_temp}°C ~ {max_temp}°C\n  天气：{weather_desc}")
             else:
-                sections.append("🌤️ 天气查询（Open-Meteo）：无数据返回")
+                sections.append(" 天气查询（Open-Meteo）：无数据返回")
 
         # 显示营养 API 调用结果
         nutrition_apis = []
@@ -175,23 +175,23 @@ def _build_api_data_section(api_data: Dict[str, Any], plan_type: str) -> str:
                 nutrition_apis.append("Fruityvice")
 
         if nutrition_apis:
-            sections.append(f"🥗 营养数据来源：{'、'.join(nutrition_apis)}")
+            sections.append(f" 营养数据来源：{'、'.join(nutrition_apis)}")
         elif "get_food_nutrition" in api_data or "get_fruit_nutrition" in api_data:
-            sections.append("🥗 营养数据来源：Open Food Facts、Fruityvice（查询失败）")
+            sections.append(" 营养数据来源：Open Food Facts、Fruityvice（查询失败）")
 
     # 旅行计划：展示天气和汇率来源
     elif plan_type == "travel":
         if "get_weather_forecast" in api_data:
             weather = api_data["get_weather_forecast"]
             if "city" in weather:
-                sections.append(f"🌤️ 天气来源（Open-Meteo）：{weather['city']}")
+                sections.append(f" 天气来源（Open-Meteo）：{weather['city']}")
 
         if "get_exchange_rates" in api_data:
             rates = api_data["get_exchange_rates"]
             if "base" in rates and "rates" in rates:
                 base = rates["base"]
                 rate_count = len(rates["rates"])
-                sections.append(f"💱 汇率来源（ExchangeRate-API）：基准货币 {base}，共 {rate_count} 种货币")
+                sections.append(f" 汇率来源（ExchangeRate-API）：基准货币 {base}，共 {rate_count} 种货币")
 
     # 工作计划：展示节假日来源
     elif plan_type == "work":
@@ -199,7 +199,7 @@ def _build_api_data_section(api_data: Dict[str, Any], plan_type: str) -> str:
             holidays = api_data["get_china_holidays"]
             if "holidays" in holidays:
                 holiday_count = len(holidays["holidays"])
-                sections.append(f"📅 节假日来源（timor.tech）：共 {holiday_count} 个节假日")
+                sections.append(f" 节假日来源（timor.tech）：共 {holiday_count} 个节假日")
 
         if "get_world_time" in api_data:
             sections.append("⏰ 时区来源：WorldTimeAPI")
@@ -209,10 +209,10 @@ def _build_api_data_section(api_data: Dict[str, Any], plan_type: str) -> str:
         if "get_exchange_rates" in api_data:
             rates = api_data["get_exchange_rates"]
             if "base" in rates:
-                sections.append(f"💱 汇率来源（ExchangeRate-API）：基准货币 {rates['base']}")
+                sections.append(f" 汇率来源（ExchangeRate-API）：基准货币 {rates['base']}")
 
         if "get_economic_data" in api_data:
-            sections.append("📊 经济数据来源：Econdb")
+            sections.append(" 经济数据来源：Econdb")
 
     if sections:
         return "\n\n【数据来源】\n" + "\n\n".join(sections)
@@ -237,7 +237,7 @@ def generate_learning_plan(params: Dict[str, Any], rag_context: Optional[str] = 
         - daily_hours: 每天学习小时数
         - level: 当前水平（可选）
     """
-    # ✅ 安全：所有变量都有默认值
+    #  安全：所有变量都有默认值
     topic = _safe_get(params, "topic", "未指定主题")
     duration = _safe_get(params, "duration", "未指定时长")
     goal = _safe_get(params, "goal", "未指定目标")
@@ -253,7 +253,7 @@ def generate_learning_plan(params: Dict[str, Any], rag_context: Optional[str] = 
     if books and isinstance(books, list) and len(books) > 0:
         book_text = "\n\n推荐书籍："
         for i, book in enumerate(books[:3], 1):
-            # ✅ 安全：每个字段都有默认值
+            #  安全：每个字段都有默认值
             if isinstance(book, dict):
                 title = book.get("title", "未知书名")
                 author = book.get("author", "未知作者")
@@ -262,7 +262,7 @@ def generate_learning_plan(params: Dict[str, Any], rag_context: Optional[str] = 
                 author = "未知作者"
             book_text += f"\n  {i}. 《{title}》- {author}"
     else:
-        # ✅ 兜底：API 返回空结果时的默认文本
+        #  兜底：API 返回空结果时的默认文本
         book_text = "\n\n推荐书籍：暂无推荐书籍，建议手动搜索或稍后再试"
 
     # 生成周计划
@@ -299,7 +299,7 @@ def generate_learning_plan(params: Dict[str, Any], rag_context: Optional[str] = 
         if "小时" not in daily_hours and "h" not in daily_hours.lower():
             daily_hours_display = f"{daily_hours}小时"
 
-    # ✅ 安全：使用 f-string 渲染，所有变量都已确保有值
+    #  安全：使用 f-string 渲染，所有变量都已确保有值
     return f"""
 {topic} 学习计划（{duration}）
 
@@ -372,7 +372,7 @@ def generate_health_plan(params: Dict[str, Any], rag_context: Optional[str] = No
         - height: 身高（可选）
         - weight: 体重（可选）
     """
-    # ✅ 所有变量都有默认值
+    #  所有变量都有默认值
     goal = _safe_get(params, "goal", "未指定目标")
     duration = _safe_get(params, "duration", "未指定时长")
     weather = _safe_get(params, "weather", {}) or {}

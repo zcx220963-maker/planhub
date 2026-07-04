@@ -591,7 +591,7 @@ async def chat_plan(request: ChatRequest):
             response += f"请告诉我以下必填信息（可以一次性回答）：\n\n{all_questions}\n\n"
 
             if suggestions:
-                response += f"💡 {suggestions}\n"
+                response += f" {suggestions}\n"
 
             add_chat_message(session_id, "assistant", response, user_id=user_id_str, module="chat")
 

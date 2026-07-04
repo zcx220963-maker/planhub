@@ -106,6 +106,9 @@ class AgentService:
             system_prompt=ASSISTANT_SYSTEM_PROMPT,
             checkpointer=checkpointer,
         )
+        # 限制最大迭代次数，防止小模型重复调用工具陷入死循环
+        # 每次 iteration = 1次 LLM 调用 + 1次工具执行，8 次足够完成"获取列表→选择→打卡"这类多步操作
+        agent = agent.with_config({"recursion_limit": 16})
         print(f"[DEBUG] Agent 构建完成，类型: {type(agent)}", flush=True)
         return agent
 
@@ -120,7 +123,8 @@ class AgentService:
         self._agent_instance = None
 
     async def run_async(self, user_input: str, chat_history: list | None = None,
-                        session_id: str = "default", user_id: str = None) -> str:
+                        session_id: str = "default", user_id: str = None,
+                        action_type: str = "none", action_params: dict = None) -> str:
         """
         执行一次对话（异步版本，集成所有优化）
 
@@ -137,14 +141,21 @@ class AgentService:
             chat_history: 历史对话 [{"role": "user"|"assistant", "content": "..."}]
             session_id: 会话ID（用于状态管理）
             user_id: 用户ID（用于长期记忆）
+            action_type: 操作类型（supervisor 已解析），如 search/checkin/post/detail/activity
+            action_params: 已解析的操作参数（supervisor 已解析）
 
         Returns:
             AI 回复文本（最终答案）
         """
         # DEBUG: 测试方法是否被调用
-        print(f"[DEBUG] run_async 被调用! user_input={user_input[:50]}", flush=True)
+        print(f"[DEBUG] run_async 被调用! user_input={user_input[:50]}, action_type={action_type}, action_params={action_params}", flush=True)
 
         reset_token_stats()
+
+        # 重置工具调用计数，防止跨会话累积
+        from app.common.langchain_tools import reset_tool_call_counts
+        reset_tool_call_counts()
+
         self._current_session_id = session_id
 
         # DEBUG: 测试日志是否能输出
@@ -170,9 +181,9 @@ class AgentService:
             user_preference = ""
 
             if self.memory_service:
-                short_term = await self.memory_service.get_short_term(session_id)
+                short_term = self.memory_service.get_short_term(session_id)
                 if user_id:
-                    user_preference = await self.memory_service.get_user_preference(user_id)
+                    user_preference = self.memory_service.get_user_preference(user_id)
 
             # 获取对话状态
             conv_state = get_conversation_state(session_id)
@@ -184,9 +195,17 @@ class AgentService:
 
             # 3. 构建极简上下文（只传必要信息）
             system_prompt = ASSISTANT_SYSTEM_PROMPT
+            
+            # 如果有 action_type（supervisor 已解析意图），添加明确操作指示
+            if action_type and action_type != "none":
+                action_instruction = self._build_action_instruction(action_type, action_params or {})
+                if action_instruction:
+                    system_prompt = f"{ASSISTANT_SYSTEM_PROMPT}\n\n{action_instruction}"
+            
+            # 如果有对话状态，追加状态上下文
             if conv_state.state != ConversationStateEnum.IDLE:
                 state_context = conv_state.get_prompt_context()
-                system_prompt = f"{ASSISTANT_SYSTEM_PROMPT}\n\n{state_context}"
+                system_prompt = f"{system_prompt}\n\n{state_context}"
 
             # 使用上下文服务构建优化消息（简化版）
             optimized_context = self.context_service.build_context(
@@ -212,14 +231,14 @@ class AgentService:
                 timestamp = time.time()
 
                 # 保存用户输入
-                await self.memory_service.save_short_term(session_id, {
+                self.memory_service.save_short_term(session_id, {
                     "role": "user",
                     "content": user_input,
                     "timestamp": timestamp
                 })
 
                 # 保存AI最终回答
-                await self.memory_service.save_short_term(session_id, {
+                self.memory_service.save_short_term(session_id, {
                     "role": "assistant",
                     "content": final_answer,
                     "timestamp": timestamp + 0.1
@@ -227,7 +246,7 @@ class AgentService:
 
                 # 每 10 轮对话更新一次用户偏好（减少写入频率）
                 if self.memory_service and user_id and len(short_term) % 10 == 0:
-                    await self.memory_service.update_user_preference(user_id, short_term)
+                    self.memory_service.update_user_preference(user_id, short_term)
 
             # 6. 获取 Token 统计
             stats = get_token_stats()
@@ -327,8 +346,8 @@ class AgentService:
                     break
 
             if not has_tool_calls:
-                print(f"[DEBUG] ⚠️ 警告：agent.invoke 返回的消息中没有工具调用！", flush=True)
-                print(f"[DEBUG] ⚠️ 这意味着 AI 模型没有调用任何工具，而是直接回复了文本", flush=True)
+                print(f"[DEBUG]  警告：agent.invoke 返回的消息中没有工具调用！", flush=True)
+                print(f"[DEBUG]  这意味着 AI 模型没有调用任何工具，而是直接回复了文本", flush=True)
 
             logger.info(f"[执行对话] agent.invoke 完成，返回消息数: {len(all_msgs)}")
 
@@ -484,37 +503,127 @@ class AgentService:
                 content = str(m.content)[:120] if m.content else "(空)"
                 logger.info(f"[Observation #{idx + 1}] 工具 {tool_name} 返回: {content}")
 
+    def _build_action_instruction(self, action_type: str, action_params: dict) -> str:
+        """
+        根据 action_type 构建明确的操作指示，告诉 LLM 应该做什么、调用哪个工具、已经有哪些参数。
+        这样 LLM 不需要再猜意图，直接根据指示调用工具即可。
+        """
+        lines = []
+        lines.append("【上级已识别意图 - 直接执行，不要再猜测意图】")
+        
+        if action_type == "search":
+            keyword = action_params.get("keyword", "")
+            lines.append(f"操作类型: 搜索")
+            lines.append(f"应调用工具: search_plans")
+            if keyword:
+                lines.append(f"已解析关键词: {keyword}")
+                lines.append(f"【强制】直接调用 search_plans(keyword=\"{keyword}\")，不要询问，不要回复文本！")
+            else:
+                lines.append("状态: 缺少关键词")
+                lines.append("请向用户询问要搜索的关键词")
+        
+        elif action_type == "checkin":
+            index = action_params.get("index", 0)
+            lines.append("操作类型: 打卡")
+            if index:
+                lines.append(f"应调用工具: check_in_plan")
+                lines.append(f"已选择序号: {index}")
+                lines.append(f"【强制】直接调用 check_in_plan(plan_id=\"{index}\")，不要询问，不要回复文本！")
+                lines.append(f"【重要】plan_id 直接传序号 \"{index}\"，不要转成真实ID，工具内部自动处理！")
+            else:
+                lines.append("应调用工具: 先 get_unchecked_plans() 获取列表，等用户选择后再调用 check_in_plan")
+                lines.append("【强制】用户说\"打卡\"/\"我要打卡\"时，直接调用 get_unchecked_plans()，不要询问，不要回复文本！")
+        
+        elif action_type == "post":
+            content = action_params.get("content", "")
+            title = action_params.get("title", "")
+            lines.append("操作类型: 发帖")
+            lines.append("应调用工具: create_post")
+            if content:
+                lines.append(f"已解析内容: {content}")
+            if title:
+                lines.append(f"已解析标题/标签: {title}")
+            if content:
+                lines.append(f"【强制】直接调用 create_post(content=\"{content}\", hashtags=\"{title or ''}\")，不要询问，不要回复文本！")
+            else:
+                lines.append("状态: 缺少帖子内容")
+                lines.append("请向用户询问帖子内容")
+        
+        elif action_type == "detail":
+            index = action_params.get("index", 0)
+            lines.append(f"操作类型: 选择第 {index} 项")
+            lines.append(f"应调用工具: 根据上下文判断")
+            lines.append(f"- 如果上一轮是未打卡计划列表，调用 check_in_plan(plan_id=\"{index}\")")
+            lines.append(f"- 如果上一轮是搜索结果，调用 get_item_detail(item_type=\"plan\", display_id={index})")
+            lines.append(f"【强制】必须调用工具，不要直接回复文本！")
+            lines.append(f"【重要】plan_id 直接传序号 \"{index}\"，不要转成真实ID，工具内部自动处理！")
+        
+        elif action_type == "activity":
+            lines.append("操作类型: 查看活动")
+            lines.append("应调用工具: get_user_activity")
+            lines.append("【强制】直接调用 get_user_activity(user_id=当前用户ID)，不要询问，不要回复文本！")
+        
+        else:
+            lines.append(f"操作类型: {action_type}")
+            lines.append("请根据用户输入判断需要调用什么工具")
+        
+        lines.append("【重要提醒】")
+        lines.append("- 意图已经识别好了，不要再猜测用户意图，直接按上面的指示执行")
+        lines.append("- 如果参数足够，立即调用工具，不要回复文本")
+        lines.append("- 如果参数不够，向用户询问缺失的参数")
+        
+        return "\n".join(lines)
+
     def _extract_final_answer(self, all_msgs) -> str:
         """从消息列表中提取最终回答
 
-        优先返回工具返回的结果（ToolMessage），避免 AI 重复生成回复
-        只有当没有工具返回结果时，才返回 AI 的回复
-
-        特殊处理：如果 check_in_plan 成功，优先返回打卡成功的消息
+        逻辑：
+        1. 先找到最后一条 HumanMessage（用户输入），只看它之后的消息
+        2. 优先返回本轮第一个有效 ToolMessage（用户主要需求对应的工具结果）
+           - 跳过拦截提示和错误提示类 ToolMessage
+        3. 如果没有有效 ToolMessage，返回本轮最后一个有内容的 AIMessage
         """
-        # 优先查找 check_in_plan 的成功消息
-        for m in all_msgs:
-            if isinstance(m, ToolMessage) and getattr(m, "name", "") == "check_in_plan":
-                content = m.content if hasattr(m, "content") else str(m)
-                if content and ("成功" in content or "完成" in content):
-                    print(f"[DEBUG] _extract_final_answer: 使用 check_in_plan 成功消息: {content[:100]}", flush=True)
-                    return content
+        # 拦截/错误提示的关键词（这些 ToolMessage 不是真实结果）
+        skip_keywords = [
+            "本次已调用过", "请勿重复调用", "请直接回复", "已查询过", "无需重复调用",
+            "无法识别", "请输入序号", "参数验证失败"
+        ]
 
-        # 查找最后一个 ToolMessage（工具返回的结果）
-        for m in reversed(all_msgs):
+        # 1. 找到最后一条 HumanMessage 的位置，只看它之后的消息
+        last_human_idx = -1
+        for i, m in enumerate(all_msgs):
+            if isinstance(m, HumanMessage):
+                last_human_idx = i
+
+        recent_msgs = all_msgs[last_human_idx + 1:] if last_human_idx >= 0 else all_msgs
+
+        # 2. 优先返回本轮第一个有效 ToolMessage
+        first_valid_tool_msg = None
+        for m in recent_msgs:
             if isinstance(m, ToolMessage):
                 content = m.content if hasattr(m, "content") else str(m)
                 if content and content.strip():
-                    print(f"[DEBUG] _extract_final_answer: 使用 ToolMessage: {content[:100]}", flush=True)
-                    return content
+                    if any(kw in content for kw in skip_keywords):
+                        continue
+                    first_valid_tool_msg = content
+                    break
 
-        # 如果没有工具返回结果，返回最后一个 AIMessage
-        for m in reversed(all_msgs):
+        if first_valid_tool_msg:
+            print(f"[DEBUG] _extract_final_answer: 使用本轮第一个 ToolMessage: {first_valid_tool_msg[:100]}", flush=True)
+            return first_valid_tool_msg
+
+        # 3. 否则，返回本轮最后一个有内容的 AIMessage
+        for m in reversed(recent_msgs):
             if isinstance(m, AIMessage):
                 content = m.content if hasattr(m, "content") else str(m)
                 if content and content.strip():
-                    print(f"[DEBUG] _extract_final_answer: 使用 AIMessage: {content[:100]}", flush=True)
-                    return content
+                    # 去掉 <think> 标签内容
+                    import re
+                    content = re.sub(r'</?think>.*?</think>\s*', '', content, flags=re.DOTALL)
+                    content = content.strip()
+                    if content:
+                        print(f"[DEBUG] _extract_final_answer: 使用 AIMessage: {content[:100]}", flush=True)
+                        return content
 
         return "抱歉，未能处理您的请求，请稍后再试。"
 

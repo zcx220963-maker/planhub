@@ -1,1142 +1,785 @@
-# PlanHub - AI驱动的计划管理与社交平台
+# PlanHub - AI 驱动的计划管理与社交平台
 
-<div align="center">
-
-**基于LangGraph构建多Agent编排系统，支持智能计划生成、社区互动和知识库问答**
+**双后端架构：Java Spring Boot 业务中台 + Python LangGraph AI 编排系统**
 
 [![Java](https://img.shields.io/badge/Java-17-blue.svg)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.2.0-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-19.2.6-blue.svg)](https://react.dev.io/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Latest-orange.svg)](https://langchain-ai.github.io/langgraph/)
-[![Redis](https://img.shields.io/badge/Redis-7.0+-red.svg)](https://redis.io/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-</div>
+---
 
-## 一、项目结构
+## 一、项目架构
+
+### 1. 双后端安全架构
 
 ```
-planhub2.0/
-├── .env.example                  # 环境变量模板
-├── README.md                     # 项目文档
-├── planhub_schema.sql            # 数据库建表脚本
-├── backend/                      # Java后端模块
-│   └── src/main/java/com/planhub/
-│       ├── config/               # 配置类（JWT、安全、AI等）
-│       ├── controller/           # REST控制器（16个）
-│       ├── service/              # 业务逻辑层
-│       ├── entity/               # 数据库实体（17个）
-│       └── mapper/               # MyBatis映射器
-├── frontend/                     # React前端模块
-│   └── src/
-│       ├── pages/                # 页面组件（21个）
-│       ├── components/           # 通用组件（6个）
-│       ├── services/             # API服务层
-│       └── types/                # TypeScript类型定义
-└── py_agent/                     # Python AI服务模块
-    └── src/app/
-        ├── api/                  # API路由（5个）
-        ├── orchestrator/         # LangGraph编排器
-        │   ├── graph.py          # 图结构定义
-        │   ├── nodes/            # 11个节点实现
-        │   ├── state.py          # 状态定义
-        │   └── memory_bridge.py  # 记忆桥接
-        ├── service/              # 业务服务（8个）
-        └── common/               # 公共工具
+前端 → Java 安全网关（JWT 鉴权）→ Python AI 服务（仅监听 127.0.0.1）
 ```
 
+- **Java 后端**：业务逻辑、数据权限隔离、JWT 认证、MySQL/Redis 数据层
+- **Python AI 服务**：LangGraph 编排 + LangChain 工具调用，通过内网密钥鉴权，零外部暴露
 
-## 二、核心特性
+### 2. LangGraph 编排系统总览
 
-### 1. 多Agent编排系统（LangGraph）
-基于LangGraph构建ReAct状态机，设计多Agent动态路由策略：
-- **计划生成Agent**：自动提取用户意图，生成结构化计划
-- **智能助手Agent**：通过Function Calling自动调用后端API完成社区操作
-- **知识库Agent**：基于混合检索的智能问答
-- **意图识别**：自动识别用户意图并路由到对应的Agent
+基于 `StateGraph` 构建多 Agent 确定性路由，Supervisor 节点识别意图后路由到对应 Agent。整个编排层代码位于 `py_agent/src/app/orchestrator/`，分为三层：
 
-### 2. Tool Calling智能助手
-实现Tool Calling智能助手系统，支持15+社区操作：
-- 创建计划、发布帖子、搜索内容、计划打卡
-- 通过Function Calling自动调用后端API完成任务
+```
+orchestrator/
+├── graph.py          # StateGraph 定义（节点注册 + 边 + 条件路由函数）
+├── state.py          # AgentState — 整个图的唯一状态对象（TypedDict）
+├── schemas.py        # 结构化输出（IntentResult）、能力开关（CapabilityFlags）
+├── memory_bridge.py  # Redis 读写桥接（对话历史、短期记忆、会话持久化）
+└── nodes/
+    ├── supervisor.py          # 意图分类 + 路由决策
+    ├── plan_mode_confirm.py   # 计划模式确认（是否开启计划收集）
+    ├── plan_generator.py      # LLM 多轮对话收集用户需求
+    ├── parameter_extractor.py # 工具选择 + 参数提取（Tool RAG + LLM Rerank）
+    ├── tool_executor.py       # 纯工具调用执行器（调用外部 API）
+    ├── doc_retriever.py       # 用户文档检索（从用户上传的知识库）
+    ├── plan_writer.py         # 最终计划文本生成（LLM 综合所有数据）
+    ├── plan_confirmation.py   # 询问是否创建到平台
+    ├── extract_plan_title.py  # LLM 提取计划标题
+    ├── create_plan_to_platform.py  # 调用 Java 后端创建计划
+    ├── assistant.py           # 通用工具调用 Agent（搜索/打卡/发帖/查看）
+    ├── rag.py                 # 文档知识库检索问答
+    ├── chat.py                # 闲聊节点
+    └── memory_load.py / memory_save.py  # 记忆加载/保存（graph.py 内联）
+```
 
-### 3. 三层记忆架构
-在Redis中构建三层记忆架构，实现跨会话上下文理解：
-- **短期对话历史**：存储最近20条对话消息
-- **工作记忆状态**：记录当前任务执行状态
-- **用户偏好摘要**：长期积累的用户偏好和行为模式
+#### 2.1 完整图结构与路由
 
-### 4. 混合检索RAG系统
-- **BM25关键词检索** + **向量相似度检索** + **LLM重排优化**
-- 支持PDF/DOCX/PPTX/XLSX文档解析
+```
+                                    ┌──────────────────────┐
+                                    │     memory_load       │ ← 入口：从 Redis 加载历史对话
+                                    └──────────┬───────────┘
+                                               │ (固定边)
+                                               ▼
+                                    ┌──────────────────────┐
+                                    │     supervisor        │ ← 意图分类 + 前置规则匹配
+                                    └──┬──────┬──────┬─────┘
+                                       │      │      │
+              ┌────────────────────────┼──────┼──────┼────────────────────┐
+              │ 条件路由 (route_by_intent)                                       │
+              │                                                               │
+              │  plan_mode_confirm  plan_generator  assistant  rag  chat       │
+              │       │                  │            │          │      │     │
+              │       │                  │            │          │      │     │
+              │       ▼                  ▼            ▼          ▼      ▼     │
+              │  [计划确认]          [计划收集]    [工具调用]  [RAG]  [闲聊]  │
+              │                                                               │
+              └──────────────────────────────────────────────────────────────┘
+                                               │
+                                    ┌──────────▼───────────┐
+                                    │     memory_save       │ ← 出口：保存对话到 Redis
+                                    └──────────┬───────────┘
+                                               │
+                                              END
+```
 
-### 5. 智能容错和降级机制 
-设计完整的系统容错和降级策略：
-- **5级降级策略**：备用模型→备用服务→核心功能→缓存响应→默认回复
-- **智能重试机制**：实现指数退避重试，系统可用性达到99.5%
-- **错误分类恢复**：智能错误分类和自动恢复，减少人工干预80%
+#### 2.2 计划生成完整子流程（唯一需要跨节点断点的流程）
 
-### 6. 双后端安全架构
-- Java后端负责业务逻辑与JWT鉴权
-- Python后端专注AI处理，仅监听127.0.0.1
-- 确保AI服务零外部暴露
+```
+用户说"制定旅行计划"
+       │
+       ▼
+  supervisor（识别为 plan_creation 意图）
+       │
+       ▼
+  plan_mode_confirm（问"是否开启计划模式？"）
+       │ 用户说"是"
+       ▼
+  plan_generator（LLM 多轮对话收集需求）
+       │  第1轮：问"想去哪里？"
+       │  用户："杭州三日游，喜欢美食和风景"
+       │  第2轮：问"和谁一起去？"
+       │  用户："不想回答" 或 "确认"
+       │  用户说"确认" → needs_plan_building=True
+       ▼
+  parameter_extractor（Tool RAG 检索工具 + LLM 提取参数）
+       │  输出: ranked_tools = [{tool:"get_weather_forecast", params:{city:"杭州", days:3}}, ...]
+       │
+       ├──→ tool_executor（并行）──→ 调用外部 API → 返回天气/营养/运动数据
+       │                                        │
+       │                              tool_data_parts = ["天气信息（杭州）...", ...]
+       │
+       └──→ doc_retriever（并行）──→ 从用户选中的文档检索相关知识点
+                                                │
+                                      doc_data_parts = ["[来源: 文档1#3]: ...", ...]
+                                                │
+                                    ┌───────────▼───────────┐
+                                    │     plan_writer        │ ← 等 tool_executor + doc_retriever 都完成
+                                    └───┬───────────┬───────┘
+                                        │           │
+                              plan_text_cache    plan_metadata
+                              （最终计划文本）   （数据来源标注）
+                                        │
+                                        ▼
+                              plan_confirmation（问"是否创建到平台？"）
+                                        │ 用户说"是"
+                                        ▼
+                              extract_plan_title（LLM 提取标题，如"杭州三日游计划"）
+                                        │
+                                        ▼
+                              create_plan_to_platform（调 Java 后端 API 创建计划）
+                                        │
+                                        ▼
+                                   memory_save → END
+```
 
+---
 
-## 三、技术栈
+### 3. 节点路由机制：怎么走到正确节点的？
+
+#### 3.1 Supervisor 的分层决策
+
+Supervisor 是整个编排的"大脑"，决策分 **6 层优先级**（从高到低）：
+
+```
+优先级1: 正在计划流程中？ ──────────────────────────────────────┐
+  └─ execution_trace 里有 plan_generator/plan_mode_confirm?     │
+     └─ 是 → 直接路由回 plan_generator/plan_confirmation        │
+                                                                  │
+优先级2: 用户选中了文档且非计划意图？ ─────────────────────────── │
+  └─ selected_doc_ids 非空 + 用户输入不含"计划/制定"?           │
+     └─ 是 → 直接路由到 rag 节点                                │
+                                                                  │
+优先级3: 对话状态机等待参数/选择？ ───────────────────────────── │
+  └─ ConversationState 是 WAITING_PARAM/WAITING_SELECT?          │
+     └─ 是 → 路由到 assistant（继续执行未完成的打卡/搜索任务）   │
+                                                                  │
+优先级4: 等待计划模式确认？ ──────────────────────────────────── │
+  └─ waiting_for_plan_mode_confirm=True?                         │
+     └─ 是 → plan_mode_confirm                                   │
+                                                                  │
+优先级5: 等待计划创建确认？ ──────────────────────────────────── │
+  └─ waiting_for_plan_confirmation=True?                         │
+     └─ 是 → plan_confirmation                                   │
+                                                                  │
+优先级6: 前置关键词规则匹配 ──────────────────────────────────── │
+  └─ 搜索词开头？打卡词开头？发帖词开头？纯数字/序号？计划关键词？│
+     └─ 命中 → 直接路由（不走 LLM，避免误判）                    │
+                                                                  │
+优先级7: LLM 意图分类（兜底） ──────────────────────────────────  │
+  └─ 把用户输入 + 系统 prompt 发给 LLM，返回结构化 IntentResult  │
+     └─ plan_creation → plan_mode_confirm                        │
+     └─ assistant → assistant                                    │
+     └─ chat → chat                                              │
+     └─ clarify → chat                                           │
+```
+
+**为什么需要前置规则（优先级1-6）？** 因为小模型（7B）对用户说的"是"、"确认"、"搜索旅游"这类短输入很容易误分类。前置规则用代码确定性匹配，覆盖高频场景；LLM 只处理复杂长尾输入。
+
+#### 3.2 任务不被打断的设计
+
+计划流程的核心问题是：**用户说了"制定计划"后，中间要等多轮对话，怎么让下一轮不走错节点？**
+
+答案是三管齐下：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 机制1: LangGraph Checkpoint（Redis，30分钟TTL）              │
+│   每轮图执行完，LangGraph 自动把整个 AgentState 序列化到     │
+│   Redis 的 ckpt:thread:{session_id} key。                    │
+│   下次同 session 发消息，LangGraph 自动反序列化恢复所有字段。 │
+│                                                             │
+│ 机制2: execution_trace（写在 AgentState 里）                 │
+│   每个节点执行后把 {node, status, collecting_info,            │
+│   plan_generated, needs_plan_building} 追加到 trace 列表。   │
+│   supervisor 读 trace 就知道"当前走到哪一步"。                │
+│                                                             │
+│ 机制3: boolean 标记（waiting_for_plan_mode_confirm 等）      │
+│   各节点在结束时设置标记，supervisor 优先检查这些标记。       │
+│   例如 plan_mode_confirm 后设置 waiting_for_plan_mode_confirm=True │
+│   → supervisor 下次直接路由到 plan_mode_confirm 处理用户回复  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+具体执行流（以用户说"是"为例）：
+
+```
+第1轮：
+  用户输入 "制定旅行计划"
+  → graph.ainvoke({user_input: "制定旅行计划", ...})
+  → memory_load（从 Redis 加载历史对话）
+  → supervisor（LLM 分类为 plan_creation）
+  → plan_mode_confirm（返回"是否开启计划？"）
+  → memory_save（保存对话 + 清除 checkpoint）
+  → LangGraph 自动写 checkpoint: {execution_trace:[...], waiting_for_plan_mode_confirm=True, ...}
+
+第2轮（Redis checkpoint 还在）：
+  用户输入 "是"
+  → graph.ainvoke({user_input: "是", ...})
+  → LangGraph 先从 checkpoint 恢复 state → waiting_for_plan_mode_confirm=True
+  → supervisor（检查优先级4 → 直接路由到 plan_mode_confirm）
+  → plan_mode_confirm（检测到确认 → 返回 + 设置 selected_agent=plan_generator）
+  → plan_generator（问第一个问题"想去哪里？"）
+  → memory_save → 写新 checkpoint
+
+第3轮（Redis checkpoint 还在）：
+  用户输入 "杭州三日游"
+  → LangGraph 恢复 state → execution_trace 里有 plan_generator(collecting_info=True)
+  → supervisor（检查优先级1 → trace 显示还在收集信息 → 路由回 plan_generator）
+  → plan_generator（问第二个问题）
+  → ...
+
+第N轮：用户说"确认"
+  → plan_generator（检测到确认 → needs_plan_building=True, plan_conversation_history=[...]）
+  → 路由到 parameter_extractor
+  → parameter_extractor → tool_executor + doc_retriever（并行）→ plan_writer → plan_confirmation
+  → 问"是否创建到平台？"
+```
+
+---
+
+### 4. State 数据传递机制
+
+#### 4.1 AgentState 结构与生命周期
+
+```python
+class AgentState(TypedDict):
+    # ── 输入（每轮重置）──
+    user_input: str
+    session_id: str
+    user_id: Optional[str]
+    capabilities: Dict[str, Any]
+    selected_doc_ids: List[str]
+
+    # ── 路由决策（supervisor 写入）──
+    intent: Optional[str]
+    selected_agent: Optional[str]
+    confidence: float
+
+    # ── 计划流程状态（跨轮次持久化）──
+    plan_conversation_history: List[Dict]    # plan_generator 的多轮对话历史
+    plan_summary: str                       # 用户需求摘要
+    plan_text_cache: str                    # plan_writer 生成的最终计划
+    waiting_for_plan_mode_confirm: bool     # 标记：等用户确认开启计划
+    waiting_for_plan_confirmation: bool     # 标记：等用户确认创建到平台
+    needs_plan_building: bool               # 标记：plan_generator 收集完成
+    plan_generated: bool                    # 标记：计划已生成
+
+    # ── 工具执行状态 ──
+    ranked_tools: List[Dict]                # parameter_extractor 输出
+    tool_call_results: List[Dict]           # tool_executor 输出
+    tool_data_parts: List[str]              # 格式化后的工具数据文本
+    doc_data_parts: List[str]               # doc_retriever 输出
+
+    # ── execution_trace（Annotated 追加语义）──
+    execution_trace: Annotated[List[Dict], operator.add]
+    # ↑ 关键：LangGraph 的 Annotated + add 实现追加而非覆盖！
+```
+
+**核心原理**：LangGraph 的状态传递不是替换整个 state，而是 **reducer 合并**。`execution_trace` 用 `operator.add` 实现追加，其他字段用默认的覆盖语义。每个节点返回一个 dict，LangGraph 自动 merge 到全局 state。
+
+#### 4.2 State 的持久化与清理时机
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Checkpoint TTL: 30 分钟                        │
+│                    Redis key: ckpt:thread:{session_id}            │
+│                                                                    │
+│  写入时机：每次 memory_save 完成后 LangGraph 自动写入              │
+│  清除时机：                                                        │
+│    1. 流程走完（memory_save 节点主动调 _clear_checkpoint）         │
+│    2. 用户点终止按钮（POST /orchestrator/cancel）                  │
+│    3. TTL 过期（30分钟自动删除）                                   │
+│    4. 从历史列表加载旧会话时（新 checkpoint 覆盖）                 │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│                    对话历史 TTL: 7 天                              │
+│                    Redis key: session:{session_id}                 │
+│                                                                    │
+│  写入时机：每次 memory_save 时追加本轮用户输入 + 助手回复          │
+│  清除时机：7 天后自动过期                                          │
+│  用途：左侧历史列表展示、30分钟后断点续传时重建状态                │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**为什么流程结束要主动清除 checkpoint？**
+如果不清，下次用户说"帮我搜索xxx"时，LangGraph 从 checkpoint 恢复 state，发现 `execution_trace` 里有 `plan_generator` 节点记录，supervisor 会误以为还在计划流程里，路由回 plan_generator。所以流程结束必须清。
+
+**30 分钟断点续传**：checkpoint 过期但对话历史还在时，`_restore_state_from_history()` 从 `session:{session_id}` 的对话历史中识别计划相关消息（如 assistant 回复里含"请说确认"），重建 `plan_conversation_history`、`plan_summary`、`execution_trace` 注入到当次 invoke 的输入里，supervisor 据此恢复路由。
+
+---
+
+### 5. 用户上下文历史怎么保存和传递的？
+
+#### 5.1 保存时机（memory_save 节点）
+
+```python
+# graph.py — memory_save_node
+async def memory_save_node(state) -> dict:
+    # 1. 取本轮 user_input + agent_output
+    chat_history = [
+        {"role": "user", "content": state["user_input"]},
+        {"role": "assistant", "content": state["agent_output"]}
+    ]
+
+    # 2. 追加到 Redis 历史会话（session:{session_id}，7天TTL）
+    #    同时读取现有历史 + 合并（用于前端历史列表展示）
+    memory_bridge.save_conversation(session_id, user_id, history=full_history)
+
+    # 3. 短期记忆也追加（memory:short:{session_id}，2小时TTL，最近20条）
+    memory_bridge.save_memory(session_id, user_id, chat_history)
+
+    # 4. 流程结束 → 清除 checkpoint
+    await _clear_checkpoint(session_id)
+```
+
+#### 5.2 历史怎么传给节点的
+
+不同节点有不同的历史获取方式：
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ 节点              │ 历史来源           │ 获取方式                   │
+├───────────────────┼────────────────────┼────────────────────────────┤
+│ chat 节点         │ 无                 │ 无状态，每轮独立            │
+│ rag 节点          │ Redis 短期记忆     │ query_rag_internal 内部读   │
+│                   │                    │ get_chat_history(session_id)│
+├───────────────────┼────────────────────┼────────────────────────────┤
+│ assistant 节点    │ LangGraph          │ AgentService.run_async:     │
+│                   │ MemorySaver +      │ memory_service.get_short_term│
+│                   | Redis 短期记忆     │ (session_id) → short_term   │
+│                   |                    │ (20条, 2小时TTL)            │
+├───────────────────┼────────────────────┼────────────────────────────┤
+│ plan_generator    │ AgentState.        │ state["plan_conversation_   │
+│                   │ plan_conversation_  │ history"] — 在 state 里     │
+│                   │ history            │ 跨轮次持久化                │
+├───────────────────┼────────────────────┼────────────────────────────┤
+│ 其他计划链路节点   │ 不需要历史          │ 只读 state 里的工具数据     │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### 5.3 上下文压缩
+
+RAG 节点有两处压缩机制：
+
+```python
+# rag.py — 上下文压缩（可选）
+# 对检索到的文档按句子切分，计算每句与问题的关键词重合度
+# 只保留最相关的句子，减少 token
+# 规则：至少保留 3 句，保留内容长度至少为原文的 30%
+
+# agent_service.py — 短期记忆裁剪
+# memory:short:{session_id} 是 Redis List，固定保留最近 20 条
+# memory_bridge._ltrim(key, 0, 19)  # 自动裁剪
+```
+
+---
+
+### 6. RAG 的三个子系统设计
+
+本项目有 **三条独立但互补的 RAG 路径**：
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        RAG 路径对比                                │
+├──────────────┬──────────────────┬──────────────────┬───────────────┤
+│              │ RAG 节点         │ Tool RAG         │ Doc Retriever │
+│              │ (文档问答)       │ (计划工具选择)   │ (计划文档注入) │
+├──────────────┼──────────────────┼──────────────────┼───────────────┤
+│ 触发条件     │ 用户选中了文档   │ plan_generator   │ plan_generator │
+│              │ 且无明确计划意图 │ 确认后自动触发   │ 确认后自动触发 │
+│ 检索对象     │ 用户上传的知识库 │ TOOL_DOCS 列表   │ 用户选中的文档 │
+│              │ (Chroma 向量库)  │ (24个API工具文档) │ (hybrid_search)│
+│ 召回方式     │ 向量 + BM25      │ 向量 + BM25      │ 向量 + BM25    │
+│              │ + HyDE           │ + 触发词降级     │ (无 HyDE)      │
+│ 排序方式     │ 归一化加权 +     │ LLM Rerank       │ 归一化加权     │
+│              │ LLM Rerank       │ (参数提取)       │ (无需 Rerank)  │
+│ 后处理       │ 上下文压缩       │ 参数校验 +       │ 带来源标记    │
+│              │ + 来源校验       │ 实体解析         │ 的原始片段     │
+│ 输出用途     │ 回答用户问题     │ 调用外部 API     │ 注入 plan_writer│
+│              │                  │ 获取实时数据     │ 作为额外依据   │
+└──────────────┴──────────────────┴──────────────────┴───────────────┘
+```
+
+#### 6.1 RAG 节点（文档检索问答）
+
+**触发**：用户在前端勾选了文档 + 输入非计划意图（如"帮我总结文档内容"）
+
+**执行链路**：
+```
+用户问题 "杭州有什么必去景点？"
+    │
+    ▼
+rag_node（检查 selected_doc_ids → 有选中 → 调 query_rag_internal）    │
+    ▼
+query_rag_internal → query_rag:
+    │
+    ├──→ HyDE 扩展：LLM 生成假设笔记
+    │    "假设用户在杭州旅行，想了解西湖、灵隐寺、西溪湿地等景点..."
+    │
+    ├──→ hybrid_search：向量 + BM25 双路召回（各取 fetch_k=20）
+    │    向量：Chroma 余弦相似度
+    │    BM25：关键词词频统计
+    │    归一化融合：final_score = 0.5 × vector_norm + 0.5 × bm25_norm
+    │
+    ├──→ LLM Rerank：逐篇打分 0-10，取 Top-K
+    │
+    ├──→ 上下文压缩：保留关键词重合度最高的句子
+    │
+    ├──→ LLM 生成回答（system prompt 强约束：禁止用先验知识）
+    │
+    └──→ 返回 {answer, sources}
+    │
+    ▼
+rag_node 检查结果是否有效（非"未找到相关内容"）
+    │ 有效 → 返回 answer
+    │ 无效 → 设置 rag_fallback_to_chat=True → 路由到 chat 节点
+    │        （chat 节点会在回答开头说明"知识库未找到，以下是我的思考"）
+```
+
+**兜底策略**：
+- 用户未选中文档 → 直接 fallback 到 chat
+- 知识库查不到 → 设置 `rag_fallback_to_chat=True` → chat 节点用通用知识回答
+- LLM 生成失败 → 返回友好错误信息
+
+#### 6.2 Tool RAG（计划工具选择 + 参数提取）
+
+**触发**：用户说完"确认"后，plan_generator 设置 `needs_plan_building=True`
+
+**核心设计思路**：把每个外部 API 当作一个"文档"做 RAG。每个工具构建包含【功能】【触发词】【适用场景】【参数格式】的语义索引文档（共 24 个工具）。
+
+```python
+# tool_rag.py — TOOL_DOCS 示例（天气工具）
+Document(
+    page_content="""
+    【功能】查询指定城市未来7-16天的天气预报，包括温度、天气状况、是否下雨
+    【触发词】天气、气温、温度、下雨、晴天、阴天、目的地、旅行、旅游...
+    【适用场景】任何涉及城市/地点的计划都应该调用此工具
+    【注意】即使用户没提"天气"，只要涉及目的地，天气就是必要信息
+    【参数】city(必填,城市名), days(可选,预测天数,默认7)
+    """,
+    metadata={
+        "tool_name": "get_weather_forecast",
+        "required_slots": ["city"],
+        "optional_slots": ["days"],
+        "triggers": ["天气", "气温", "目的地", "旅行", ...]
+    }
+)
+```
+
+**执行链路（parameter_extractor 节点）**：
+```
+plan_summary = "用户计划从合肥出发去杭州三日游，喜欢美食和风景"
+    │
+    ▼
+1. Tool RAG 检索：retrieve_relevant_tools(plan_document, top_k=7)
+    ├─ 向量检索：对 24 个工具文档做 embedding 相似度匹配
+    ├─ 降级：向量检索失败 → _fallback_keyword_match（用 triggers 关键词匹配）
+    └─ 返回：[{tool_name:"get_weather_forecast", required_slots:["city"], ...},
+             {tool_name:"get_food_nutrition", required_slots:["query"], ...},
+             {tool_name:"get_wger_exercises", ...}, ...]
+    │
+    ▼
+2. LLM Rerank + 参数提取（一次调用完成两件事）：
+    给 LLM 的 prompt 包含：
+    - 【计划信息】：plan_summary
+    - 【候选工具列表（含完整参数Schema）】
+    要求 LLM：
+    a. 对每个工具打分 0-10（≥6 分才选）
+    b. 从 plan_summary 中按 Schema 提取参数值
+    c. 禁止编造、禁止推测
+    
+    输出示例：
+    ```json
+    {"rankings": [
+      {"tool":"get_weather_forecast", "score":10, "params":{"city":"杭州","days":3}},
+      {"tool":"get_food_nutrition", "score":8, "params":{"query":"杭州特色美食"}},
+      {"tool":"calculate_bmi", "score":3, "params":{}}   ← 分数低于6，不选
+    ]}
+    ```
+    │
+    ▼
+3. 参数校验：过滤 LLM 提取的非法 key（不在 required/optional_slots 里的一律丢弃）
+    │
+    ▼
+输出：ranked_tools = [{tool, score, params}, ...] → 传给 tool_executor
+```
+
+**为什么不用 end-to-end（直接让 LLM 选工具+填参数一次性输出）？**
+
+因为小模型（7B）同时做"选工具"和"精确填参数"容易出错：要么选了不该选的工具，要么参数格式不对。拆成两阶段：
+1. Tool RAG 召回候选工具（代码做，确定性强）
+2. LLM 只做打分排序 + 参数提取（难度降低，只需从结构化文本里摘取）
+
+**兜底策略**：
+- 向量检索失败 → 降级为关键词匹配（`triggers` 字段）
+- LLM 返回空/解析失败 → `ranked_tools=[]` → tool_executor 不执行任何工具 → plan_writer 进入通用知识模式
+- LLM 提取的参数含非法 key → 参数校验时丢弃
+
+#### 6.3 tool_executor 的实体解析与降级
+
+tool_executor 不是简单地 `call_tool(tool_name,params)`，而是做了**三层防护**：
+
+```
+输入: ranked_tools = [{tool:"get_food_nutrition", params:{query:"杭州的特色食物"}}]
+    │
+    ▼
+1. 跳过空参数工具：所有参数都为 null → 不调用
+    │
+    ▼
+2. 实体解析（safe_resolve_entity）：
+    原始值 "杭州的特色食物" → 解析为具体食物名
+    - get_food_nutrition: 调用 _safe_resolve_food → 对齐到标准食物名
+    - search_open_library 等: 调用 _safe_resolve_book → 对齐到标准书名
+    - 返回三态: {status:"ok", entity:"西湖醋鱼"} / {status:"ambiguous", candidates:[...]} / {status:"invalid"}
+    │
+    ├─ ok → 继续
+    ├─ ambiguous → 把候选列表写入 tool_data_parts，告诉 plan_writer "不确定，供参考"
+    └─ invalid → 跳过该工具
+    │
+    ▼
+3. 调用工具 + 降级：
+    call_tool("get_food_nutrition", {query:"西湖醋鱼"})
+    ├─ 成功 → 记录到 tool_call_results
+    └─ 失败 → 查 FALLBACK_MAP 降级：
+         get_food_nutrition 失败 → 降级为 get_themealdb（搜索相似食物）
+         get_fruit_nutrition 失败 → 降级为 get_wikipedia_summary
+         get_wger_exercises 失败 → 降级为 get_bored_activity
+    │
+    ▼
+4. 格式化输出：每个成功结果格式化为 "[来源: xxx] ..." 格式，写入 tool_data_parts
+    │
+    ▼
+输出: tool_data_parts = ["食物营养（西湖醋鱼）\n  热量：...\n[来源: Open Food Facts]", ...]
+```
+
+#### 6.4 doc_retriever（计划生成里的文档 RAG）
+
+**触发**：与 tool_executor 并行执行（都在 `needs_plan_building=True` 后触发）
+
+**与 RAG 节点的区别**：
+- RAG 节点面向用户直接提问（需要 HyDE、Rerank、压缩 → 精度高但慢）
+- doc_retriever 面向计划生成（只需 hybrid_search → 快，因为 plan_summary 本身已经是自然语言，不需要 HyDE 扩展）
+
+**执行链路**：
+```
+plan_summary = "用户计划从合肥出发去杭州三日游，喜欢美食和风景"
+selected_doc_ids = ["doc_001"]  ← 用户在前端勾选的文档
+    │
+    ▼
+doc_retriever_node:
+    ├─ 检查 selected_doc_ids → 为空则跳过
+    ├─ 检查 plan_summary → 为空则跳过
+    │
+    ▼
+hybrid_search(plan_summary, top_k=5, fetch_k=20, doc_ids=selected_doc_ids, user_id=user_id)
+    ├─ 向量检索：在 doc_001 的 chunks 中做 embedding 匹配
+    ├─ BM25 检索：关键词词频匹配
+    ├─ 归一化融合 → 取 Top-5
+    │
+    ▼
+格式化每个片段：doc_parts = ["[来源: 杭州攻略#3]: 西湖景区建议早上7点去..."]
+同时记录来源：doc_sources = [{name:"杭州攻略", chunk:3, score:0.92}, ...]
+    │
+    ▼
+输出: doc_data_parts + doc_sources → 在 plan_writer 节点合并到计划中
+```
+
+**为什么 plan_summary 不需要 HyDE？**
+RAG 节点的用户输入可能很短（"杭州景点？"），HyDE 能扩展成更丰富的语义。而 plan_generator 已经跟用户聊了多轮，`plan_summary` 是 LLM 总结的完整需求（包含目的地、天数、偏好），语义已经很丰富，直接用混合检索就够了。
+
+**兜底**：
+- 用户未选中文档 → 直接跳过，`doc_data_parts=[]`
+- 检索结果为空 → `doc_retrieval_status="no_results"`，plan_writer 只用工具数据生成
+- 检索异常 → 捕获异常，返回空，不影响计划生成
+
+---
+
+### 7. Plan Writer：如何融合所有数据生成计划
+
+```python
+# plan_writer.py
+async def plan_writer_node(state) -> dict:
+    # 1. 合并所有数据源
+    all_data_parts = tool_data_parts  # 工具调用结果
+    if doc_data_parts:                # 文档知识
+        all_data_parts.append("【知识库参考】" + "\n\n".join(doc_data_parts))
+
+    # 2. 构建最终 prompt
+    user_input_text = f"""
+    【计划信息】{plan_summary}
+    【API数据】{tool_data_text}  # 合并了当前日期 + 所有工具/文档数据
+    请生成一份完整的执行计划。
+    """
+
+    # 3. LLM 生成（temperature=0.7，max_tokens=8192）
+    # 4. 空输出 → _build_fallback_plan（从 plan_summary 提取目标生成简易计划）
+    # 5. 构建 plan_metadata（数据来源标注，供前端调试面板展示）
+```
+
+**prompt 约束**：
+- 严禁编造具体数据（温度、价格、时间等）
+- API 数据为空时基于通用知识生成框架
+- `[参考]` 标记的信息以建议口吻呈现
+- 字数 500-2000
+
+---
+
+### 8. 多标签页与会话隔离
+
+```
+session_id 管理策略（前端）：
+┌────────────────────────────────────────────────────────┐
+│ localStorage 存 {tab_id: session_id} 映射               │
+│ sessionStorage 存 tab_id（关标签页即丢失）              │
+│                                                        │
+│ - 刷新页面：tab_id 不变 → 恢复 session_id → 恢复状态    │
+│ - 新标签页：新 tab_id → 新 session_id → 完全隔离       │
+│ - 关标签页再打开：tab_id 丢失 → 无法自动恢复           │
+│   → 但可通过左侧历史列表手动恢复任意会话               │
+└────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 9. 数据生命周期总结
+
+```
+                              TTL
+ckpt:thread:{session_id}      30 分钟（流程结束主动清除）
+  └─ LangGraph checkpoint（完整 AgentState）
+  └─ 用途：跨轮次状态恢复、断点续传
+
+session:{session_id}          7 天
+  └─ 完整对话历史（[{role, content}, ...]）
+  └─ 用途：左侧历史列表、30分钟后断点恢复重建状态
+
+memory:short:{session_id}     2 小时（最近 20 条）
+  └─ 短期对话记忆（assistant/RAG 节点读取）
+  └─ 用 Redis List + ltrim 自动裁剪
+
+memory:pref:{user_id}         永不过期
+  └─ 用户偏好（assistant 节点读取）
+
+memory:working:{session_id}   1 小时
+  └─ 工作记忆（任务中间状态）
+```
+
+**状态清理时机**：
+1. **流程正常结束**：`memory_save` → `_clear_checkpoint()`（不等 TTL）
+2. **用户点终止按钮**：`POST /orchestrator/cancel` → 清除 checkpoint + ConversationState
+3. **TTL 过期**：Redis 自动删除（checkpoint 30分钟、短期记忆 2小时、会话历史 7天）
+
+---
+
+## 二、RAG 完整实现（知识库侧）
+
+> 知识库底层代码位于 `py_agent/src/app/api/rag.py`。本章讲解**文档怎么入库、怎么检索**。
+> 编排层的三条 RAG 路径（RAG/Tool RAG/Doc Retriever）见上方第 6 章。
+
+### 2.1 文档入库
+
+```
+上传文件 → 加载（PyPDFLoader/Docx2txtLoader/TextLoader）
+         → 分块（RecursiveCharacterTextSplitter, chunk_size=800, overlap=100）
+         → 生成 embedding（Ollama bge-m3）
+         → 双写：Chroma 向量库 + BM25 词频表
+```
+
+**分块策略**：
+```python
+RecursiveCharacterTextSplitter(
+    chunk_size=800,
+    chunk_overlap=100,
+    separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""]
+    # 优先级：双换行 → 单换行 → 句子分隔符 → 逗号 → 空格 → 字符
+)
+```
+
+**多索引入口**：Chroma 向量库（按 user_id 隔离 collection）+ BM25 词频表（内存）+ MySQL 元数据。
+
+### 2.2 检索流程
+
+```
+用户提问
+  → HyDE 生成假设文档（解决词汇差异）（可选）
+  → 混合检索（向量 + BM25 双路召回）
+  → 归一化 + 加权融合（向量 0.5 + BM25 0.5）
+  → LLM Rerank 精排（逐篇打分 0-10，取 Top-K）（可选）
+  → 上下文压缩（按句子切分，保留关键词重合度最高的句子）（可选）
+  → LLM 生成回答
+  → 返回结果
+```
+
+**HyDE**：LLM 生成一段"个人笔记风格"的假设文档，解决用户说"登录"文档写"认证"的词汇差异。
+
+**混合检索融合公式**：`final_score = 0.5 × vector_score_norm + 0.5 × bm25_score_norm`
+
+**上下文压缩**：至少保留 3 句，保留内容长度至少为原文的 30%，确保不遗漏关键信息。
+
+**LLM 生成约束**：文档是唯一信息来源，禁止先验知识、禁止泛化、硬性规则严格执行。后处理正则校验 `[来源: xxx]` 引用，剔除编造的文件名。
+
+---
+
+## 三、技术栈与快速开始
 
 | 层级 | 技术 |
 |------|------|
 | **前端** | React 19 + TypeScript + Vite 8 + Ant Design 6 |
-| **Java后端** | Spring Boot 3.2 + MyBatis-Plus + JWT + MySQL 8.0 + Redis 7.0 |
-| **Python AI** | FastAPI + LangChain + LangGraph + ChromaDB + Ollama/DashScope |
+| **Java 后端** | Spring Boot 3.2 + MyBatis-Plus + JWT + MySQL 8.0 + Redis 7.0 |
+| **Python AI** | FastAPI + LangChain + LangGraph + ChromaDB + Ollama / DashScope |
 
+### 快速开始
 
-## 四、快速开始
-
-### 环境要求
-- **JDK**：17+
-- **Python**：3.12+
-- **Node.js**：18+
-- **MySQL**：8.0+
-- **Redis**：5.0+
-
-### 克隆项目
 ```bash
-git clone https://gitee.com/xuzhichengchxy/planhub.git
+# 1. 克隆
+git clone https://github.com/zcx220963-maker/planhub.git
 cd planhub
-```
 
-### 配置环境变量
-```bash
+# 2. 配置环境变量
 cp .env.example .env
-# 编辑.env文件，填入你的配置
-```
 
-### 初始化数据库
-```bash
+# 3. 初始化数据库
 mysql -u root -p -e "CREATE DATABASE planhub CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -u root -p planhub < planhub_schema.sql
-```
 
-### 启动服务
-```bash
-# 1. 启动Java后端
+# 4. 启动服务
 cd backend && mvn clean package -DskipTests && java -jar target/planhub-backend-1.0.0.jar
-
-# 2. 启动Python AI服务
-cd py_agent && python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && python main.py
-
-# 3. 启动前端
+cd py_agent && pip install -r requirements.txt && python main.py
 cd frontend && npm install && npm run dev
 ```
 
-### 访问应用
-打开浏览器访问：**http://localhost:5173**
+浏览器访问：**http://localhost:5173**
 
+---
 
-
-## 五、Java后端（Spring Boot）
-
-### 安全网关模式
-Java后端作为AI服务的安全网关，负责验证JWT后转发到Python：
-- 前端请求携带JWT Token
-- Java后端验证Token，提取用户ID
-- 添加内部密钥（X-Internal-Api-Secret）
-- 转发到Python AI服务（仅监听127.0.0.1）
-
-### 用户认证
-- JWT Token生成/验证/刷新
-- BCrypt密码加密
-- Token有效期：访问令牌1小时，刷新令牌24小时
-
-### 计划打卡业务
-- 实现打卡记录、进度计算、照片上传
-- 支持计划创建/编辑/删除
-- 自动计算完成进度百分比
-
-### 社区互动业务
-- 帖子管理、点赞分享
-- 评论系统
-- 用户活动Feed流
-
-### 数据权限隔离
-- 所有查询基于user_id过滤
-- 确保数据安全性
-
-
-## 六、AI助手系统
-
-### 三个层次的AI助手
-
-#### 1. ChatBot（智能对话助手）
-- 基于LangChain的对话系统
-- 支持多轮对话和上下文记忆
-- 流式响应（SSE）
-
-
-1. ChatBot（智能对话助手）流程图
-
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                     用户输入问题                              │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │   模式选择开关        │
-              │  (plan_mode / rag)   │
-              └──────────┬───────────┘
-                         │
-          ┌──────────────┼──────────────┐
-          │              │              │
-          ▼              │              ▼
-   ┌─────────────┐       │       ┌─────────────┐
-   │ 计划模式开启 │       │       │ RAG模式开启  │
-   └──────┬──────┘       │       └──────┬──────┘
-          │              │              │
-          ▼              │              ▼
-   ┌─────────────┐       │       ┌─────────────┐
-   │ 构建计划提示 │       │       │ 检索知识库  │
-   │ 词+上下文    │       │       │ (向量+BM25) │
-   └──────┬──────┘       │       └──────┬──────┘
-          │              │              │
-          │              ▼              │
-          │       ┌─────────────┐       │
-          │       │ 普通对话模式 │       │
-          │       │ (默认状态)  │       │
-          │       └──────┬──────┘       │
-          │              │              │
-          └──────────────┼──────────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  LangChain处理       │
-              │  ChatOpenAI /        │
-              │  ChatOllama          │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  对话记忆管理         │
-              │  ConversationBuffer  │
-              │  WindowMemory        │
-              │  (保留最近10轮)      │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │     返回响应          │
-              └──────────────────────┘
-```
-
-**核心特性：**
-- **计划模式开关**：用户可开启计划生成模式，自动提取意图生成结构化计划
-- **知识库模式开关**：用户可开启RAG模式，基于文档库进行智能问答
-- **文档管理**：支持上传、管理PDF/DOCX/PPTX/XLSX文档
-- **模式切换**：支持实时切换不同AI能力，无需重启对话
-
-**LangChain应用：**
-- **对话管理**：使用`ChatOpenAI`/`ChatOllama`构建对话系统，支持多轮对话
-- **上下文记忆**：通过`ConversationBufferWindowMemory`保留最近20条对话历史
-- **提示词工程**：动态拼接系统提示词 + 历史对话 + 用户输入
-- **流式响应**：使用`stream()`方法实现SSE流式输出，提升用户体验
-- **Token控制**：每次调用记录Token消耗，自动压缩历史对话控制成本
-
-#### 2. Assistant（智能助手）
-- 基于LangChain Tool Calling
-- 支持15+社区操作（发帖、搜索、打卡、查看活动等）
-- 自动调用后端API完成任务
-
-
-2. Assistant（智能助手）流程图
-
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                     用户输入请求                              │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │   解析用户意图        │
-              │  (15+工具函数定义)   │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  LangChain Tool      │
-              │  Calling 选择工具    │
-              └──────────┬───────────┘
-                         │
-         ┌───────────────┼───────────────┬───────────────┐
-         │               │               │               │
-         ▼               ▼               ▼               ▼
-  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-  │ 计划管理    │ │ 社区互动    │ │ 用户信息    │ │ 统计分析    │
-  │ 工具调用    │ │ 工具调用    │ │ 工具调用    │ │ 工具调用    │
-  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-         │               │               │               │
-         ▼               ▼               ▼               ▼
-  ┌─────────────────────────────────────────────────────────────┐
-  │              调用 Java Spring Boot API                      │
-  │  (通过 HTTP 请求后端接口)                                    │
-  └────────────────────────┬────────────────────────────────────┘
-                           │
-                           ▼
-              ┌──────────────────────┐
-              │   MySQL 数据库       │
-              │   执行增删改查       │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │   返回操作结果        │
-              │   格式化响应          │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │     返回给用户          │
-              └──────────────────────┘
-
-可用工具列表：
-- create_plan()        : 创建新计划
-- update_plan()        : 更新计划
-- delete_plan()        : 删除计划
-- get_plan()           : 获取计划详情
-- list_plans()         : 列出用户计划
-- create_post()        : 发布社区帖子
-- like_post()          : 点赞帖子
-- comment_post()       : 评论帖子
-- follow_user()        : 关注用户
-- get_user_profile()   : 获取用户信息
-- update_user_profile() : 更新用户信息
-- get_statistics()     : 获取统计数据
-```
-
-**LangChain Tool Calling应用：**
-- **工具定义**：使用`@tool`装饰器定义15+社区操作工具（发帖、搜索、打卡等）
-- **自动调用**：LLM根据用户输入自动选择并调用合适的工具
-- **参数提取**：LLM自动从自然语言中提取工具所需参数
-- **结果格式化**：工具返回结果自动格式化为用户友好的响应
-
-#### 3. LangGraph Orchestrator（多Agent编排器）
-基于LangGraph构建的**统一编排系统**，整合ChatBot、Assistant和RAG三个AI能力：
-
-
-3. LangGraph Orchestrator（多Agent编排器）流程图
-
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│                     用户输入问题                              │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  ① memory_load      │
-              │  加载记忆上下文      │
-              │  - 短期记忆(20条)   │
-              │  - 工作记忆(任务态) │
-              │  - 用户偏好         │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  ② supervisor       │
-              │  意图分类与路由      │
-              │  支持10种意图:       │
-              │  learning/health/   │
-              │  travel/work/       │
-              │  finance/rag/chat.. │
-              └──────────┬───────────┘
-                         │
-         ┌───────────────┼───────────────┬───────────────┐
-         │               │               │               │
-         ▼               ▼               ▼               ▼
-  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-  │ 创建计划    │ │ 社区互动    │ │ 知识问答    │ │ 闲聊       │
-  │ 流程        │ │ 流程        │ │ 流程        │ │ 流程       │
-  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-         │               │               │               │
-         ▼               │               │               │
-  ┌─────────────┐        │               │               │
-  │ ③ plan_mode │        │               │               │
-  │   _confirm  │        │               │               │
-  │  计划模式   │        │               │               │
-  │  确认       │        │               │               │
-  └──────┬──────┘        │               │               │
-         │ 是            │               │               │
-         ▼               │               │               │
-  ┌─────────────┐        │               │               │
-  │ ④ plan_     │        │               │               │
-  │  generator  │        │               │               │
-  │  生成计划   │        │               │               │
-  │  详细内容   │        │               │               │
-  └──────┬──────┘        │               │               │
-         │               │               │               │
-         ▼               │               │               │
-  ┌─────────────┐        │               │               │
-  │ ⑤ plan_     │        │               │               │
-  │ confirmation│        │               │               │
-  │  计划确认   │        │               │               │
-  └──────┬──────┘        │               │               │
-         │ 确认           │               │               │
-         ▼               │               │               │
-  ┌─────────────┐        │               │               │
-  │ ⑥ extract_  │        │               │               │
-  │  plan_title │        │               │               │
-  │  提取计划   │        │               │               │
-  │  标题       │        │               │               │
-  └──────┬──────┘        │               │               │
-         │               │               │               │
-         ▼               │               │               │
-  ┌─────────────┐        │               │               │
-  │ ⑦ create_   │        │               │               │
-  │  plan_to_   │        │               │               │
-  │  platform   │        │               │               │
-  │  保存计划   │        │               │               │
-  │  到平台     │        │               │               │
-  └──────┬──────┘        │               │               │
-         │               │               │               │
-         └───────────────┼───────────────┼───────────────┘
-                         │
-                         │  (其他流程直接汇聚)
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  ⑨ rag / assistant  │
-              │      / chat         │
-              │   (执行具体任务)    │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │  ⑩ memory_save      │
-              │  保存记忆到Redis     │
-              │  - 更新短期记忆     │
-              │  - 更新工作记忆     │
-              │  - 更新用户偏好     │
-              └──────────┬───────────┘
-                         │
-                         ▼
-              ┌──────────────────────┐
-              │       END            │
-              │    返回响应          │
-              └──────────────────────┘
-
-记忆系统架构：
-┌─────────────────────────────────────────────────────────────┐
-│                     三层记忆架构                              │
-├─────────────────────────────────────────────────────────────┤
-│ 短期记忆 (Short-term)                                       │
-│  - Redis List存储，保留最近20条消息                        │
-│  - TTL: 2小时                                               │
-│  - 用于上下文理解                                           │
-├─────────────────────────────────────────────────────────────┤
-│ 工作记忆 (Working Memory)                                    │
-│  - Redis String存储，当前任务状态                           │
-│  - TTL: 1小时                                               │
-│  - 用于多步骤任务追踪                                       │
-├─────────────────────────────────────────────────────────────┤
-│ 用户偏好 (User Preference)                                   │
-│  - Redis String存储，持久化                                 │
-│  - 无过期时间                                               │
-│  - 用于个性化推荐                                           │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**核心架构：**
-
-1. **状态机设计**
-   - 使用`StateGraph`定义完整的Agent工作流
-   - 每个节点是一个异步函数，接收`AgentState`返回更新
-   - 支持条件路由、循环、并行执行
-
-2. **节点实现（11个节点）**
-
-| 节点名称 | 功能 | 说明 |
-|---------|------|------|
-| `memory_load` | 记忆加载 | 从Redis加载三层记忆（短期、工作、偏好） |
-| `supervisor` | 意图识别 | 使用LLM进行意图分类，决定路由到哪个Agent |
-| `plan_mode_confirm` | 计划模式确认 | 询问用户是否开启计划生成模式 |
-| `plan_generator` | 计划生成 | 收集信息（目标、时间、偏好），生成结构化计划 |
-| `plan_confirmation` | 计划确认 | 展示计划，询问用户是否创建到平台 |
-| `extract_plan_title` | 提取标题 | 从生成的计划中提取标题 |
-| `create_plan_to_platform` | 创建到平台 | 调用Java后端API创建计划 |
-| `assistant` | 智能助手 | 执行Tool Calling，调用Java API完成社区操作 |
-| `rag` | 知识库查询 | 查询Chroma向量数据库 + BM25索引 |
-| `chat` | 简单对话 | 处理闲聊、问候等 |
-| `memory_save` | 记忆保存 | 保存对话和状态到Redis |
-
-3. **边（Edges）定义**
-
-**条件边（Conditional Edges）：**
-```python
-# Supervisor → 根据意图路由
-workflow.add_conditional_edges(
-    "supervisor",
-    route_by_intent,
-    {
-        "plan_mode_confirm": "plan_mode_confirm",  # 计划相关意图
-        "assistant": "assistant",                  # 社区操作意图
-        "rag": "rag",                              # 知识库查询意图
-        "chat": "chat",                            # 闲聊
-    }
-)
-
-# Plan Generator → 根据生成状态路由
-workflow.add_conditional_edges(
-    "plan_generator",
-    route_after_plan_generator,
-    {
-        "plan_confirmation": "plan_confirmation",  # 计划已生成，等待确认
-        "memory_save": "memory_save",              # 继续收集信息
-    }
-)
-
-# Plan Confirmation → 根据用户选择路由
-workflow.add_conditional_edges(
-    "plan_confirmation",
-    route_after_plan_confirmation,
-    {
-        "extract_plan_title": "extract_plan_title",  # 用户确认创建
-        "memory_save": "memory_save",                  # 用户拒绝
-    }
-)
-普通边（Normal Edges）：
-
-
-# 记忆加载 → 意图识别
-workflow.add_edge("memory_load", "supervisor")
-
-# 计划标题提取 → 创建到平台
-workflow.add_edge("extract_plan_title", "create_plan_to_platform")
-
-# 创建完成 → 保存记忆
-workflow.add_edge("create_plan_to_platform", "memory_save")
-
-# 各Agent执行完成 → 保存记忆
-workflow.add_edge("assistant", "memory_save")
-workflow.add_edge("rag", "memory_save")
-workflow.add_edge("chat", "memory_save")
-
-# 记忆保存完成 → 结束
-workflow.add_edge("memory_save", END)
-意图识别（Supervisor节点）
-
-使用结构化输出的LLM进行意图分类
-支持10种意图：学习计划、健康计划、旅行计划、工作计划、财务计划、知识库查询、社区操作、闲聊等
-自动识别上下文状态（如正在收集计划信息、等待用户确认等）
-关键规则：检测到正在进行的任务时，自动路由回对应节点继续执行
-提示词拼接策略
-
-系统提示词：定义AI角色、能力范围、输出格式
-上下文注入：动态注入用户记忆、历史对话、当前状态
-工作流提示：根据当前节点（如plan_generator）加载专用提示词
-多轮拼接：保留最近20条对话历史，控制Token消耗
-记忆系统设计
-
-短期记忆（Redis）：最近20条对话，TTL 2小时
-工作记忆（Redis）：当前任务状态（如收集计划信息进度），TTL 1小时
-用户偏好（Redis）：长期积累的用户偏好，持久化存储
-会话索引（Redis）：前端会话列表，TTL 7天
-状态管理（AgentState）
-
-
-class AgentState(TypedDict):
-    user_input: str              # 用户输入
-    session_id: str              # 会话ID
-    user_id: str                 # 用户ID
-    intent: str                  # 识别的意图
-    selected_agent: str          # 选中的Agent
-    short_term_memory: list      # 短期记忆
-    working_memory: dict         # 工作记忆
-    user_preference: str         # 用户偏好
-    execution_trace: list        # 执行追踪
-    capabilities: dict           # 能力开关
-```
-错误处理和降级
-
-每个节点都有try-catch错误处理
-主LLM失败时自动降级到备用模型（阿里云→Ollama）
-降级到简单对话模式确保服务可用性
-编排流程示例：
-
-场景1：用户说"帮我制定一个学习计划"
-1. memory_load → 从Redis加载用户记忆和历史对话
-2. supervisor → 识别意图为"learning"，路由到 plan_mode_confirm
-3. plan_mode_confirm → 询问用户确认开启计划模式
-4. 用户确认 → 路由到 plan_generator
-5. plan_generator → 收集信息（目标、时间、偏好）
-6. plan_confirmation → 展示计划，询问是否创建
-7. 用户确认 → extract_plan_title → create_plan_to_platform
-8. memory_save → 保存对话和状态到Redis
-9. END → 返回结果
-
-
-场景2：用户说"搜索关于Python的文档"
-1. memory_load → 加载记忆
-2. supervisor → 识别意图为"rag"，路由到 rag节点
-3. rag → 查询Chroma向量数据库 + BM25索引
-4. memory_save → 保存查询记录
-5. END → 返回搜索结果
-
-
-场景3：用户说"帮我发个帖子"
-1. memory_load → 加载记忆
-2. supervisor → 识别意图为"assistant"，路由到 assistant节点
-3. assistant → 调用Function Calling，自动调用Java后端API
-4. memory_save → 保存操作记录
-5. END → 返回操作结果
-
-## 六、RAG知识库系统
-
-### 1. 整体架构
-```text
-用户问题
-↓
-┌─────────────────────────────────────────────────────────────┐
-│                       RAG Pipeline                          │
-│                                                             │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
-│  │   文档加载   │ →  │   文档分割   │ →  │  向量化存储  │  │
-│  │   Loader     │    │   Splitter   │    │   ChromaDB   │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘  │
-│                                                             │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐  │
-│  │   问题嵌入   │ →  │   混合检索   │ →  │   LLM重排    │  │
-│  │  Embedding   │    │  BM25+向量   │    │   Rerank     │  │
-│  └──────────────┘    └──────────────┘    └──────────────┘  │
-│                               ↓                             │
-│  ┌──────────────┐    ┌──────────────┐                      │
-│  │  上下文压缩  │ →  │   LLM生成    │ →  返回答案          │
-│  │ Compression  │    │   Generate   │                      │
-│  └──────────────┘    └──────────────┘                      │
-└─────────────────────────────────────────────────────────────┘
-```
-
-
-### 2. 文档加载（Document Loaders）
-
-支持多种文档格式，使用LangChain的文档加载器：
-
-| 文档格式 | 加载器 | 说明 |
-|---------|--------|------|
-| **PDF** | `PyPDFLoader` | 提取文本内容，保留页面结构 |
-| **DOCX** | `Docx2txtLoader` | 提取Word文档文本 |
-| **PPTX** | `UnstructuredPowerPointLoader` | 提取PPT文本内容 |
-| **XLSX** | `UnstructuredExcelLoader` | 提取Excel表格数据 |
-| **TXT** | `TextLoader` | 纯文本文件 |
-| **批量加载** | `DirectoryLoader` | 批量加载目录下所有文档 |
-
-**代码示例：**
-```python
-from langchain_community.document_loaders import (
-    PyPDFLoader, Docx2txtLoader, 
-    UnstructuredPowerPointLoader, UnstructuredExcelLoader
-)
-
-# 根据文件类型选择加载器
-LOADERS = {
-    '.pdf': PyPDFLoader,
-    '.docx': Docx2txtLoader,
-    '.pptx': UnstructuredPowerPointLoader,
-    '.xlsx': UnstructuredExcelLoader,
-    '.txt': TextLoader,
-}
-
-def load_document(file_path: str) -> List[Document]:
-    """加载文档并返回Document对象列表"""
-    ext = Path(file_path).suffix.lower()
-    loader_class = LOADERS.get(ext, TextLoader)
-    loader = loader_class(file_path)
-    return loader.load()
-```
-### 3. 文档分割（Text Splitting）
-使用递归字符分割器（RecursiveCharacterTextSplitter），优先按语义单元分割：
-```python
-分割策略：
-
-
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,           # 每个块500个字符
-    chunk_overlap=50,         # 相邻块重叠50个字符（保持上下文连贯）
-    separators=[              # 分割优先级：段落→句子→标点→空格
-        "\n\n",               # 1. 优先按段落分割
-        "\n",                 # 2. 其次按换行分割
-        "(?<=[。！？!?；;])", # 3. 按中文标点分割
-        ",",                  # 4. 按逗号分割
-        " ",                  # 5. 最后按空格分割
-        ""                    # 6. 兜底：强制字符分割
-    ]
-)
-```
-
-分割原理：
-
-chunk_size=500：每个文档块约500个字符，平衡语义完整性和检索精度
-chunk_overlap=50：相邻块重叠50字符，避免关键信息被切断
-多级分隔符：优先按段落、句子等语义单元分割，避免从句子中间切断
-
-分割示例：
-```
-
-原始文档（2000字）：
-├─ 段落1（300字）
-├─ 段落2（600字） → 分割为 chunk1(500字) + chunk2(150字，与chunk1重叠50字)
-├─ 段落3（800字） → 分割为 chunk3(500字) + chunk4(350字，与chunk3重叠50字)
-└─ 段落4（300字） → chunk5(300字，与chunk4重叠50字)
-```
-### 4. 向量化存储（Vector Storage）
-使用ChromaDB作为向量数据库，存储文档嵌入向量：
-
-嵌入模型：
-
-本地模型：Ollama bge-m3（推荐，免费，效果好）
-云端模型：DashScope text-embedding-v2（阿里云百炼）
-存储结构：
-
-```python
-from langchain_chroma import Chroma
-from langchain_ollama import OllamaEmbeddings
-
-# 创建嵌入模型
-embeddings = OllamaEmbeddings(
-    base_url="http://localhost:11434",
-    model="bge-m3"
-)
-
-# 创建向量存储
-vector_store = Chroma(
-    persist_directory="./chroma_db",
-    embedding_function=embeddings
-)
-
-# 添加文档
-vector_store.add_documents(documents)
-
-# 相似度检索
-results = vector_store.similarity_search(query, k=8)
-```
-每个文档块存储的元数据：
-```json
-
-{
-    "filename": "example.pdf",
-    "doc_id": "example",
-    "chunk_index": 0,
-    "total_chunks": 5,
-    "upload_time": "2024-01-01T12:00:00"
-}
-```
-### 5. 混合检索（Hybrid Retrieval）
-结合BM25关键词检索和向量相似度检索，提高检索准确率：
-
-（1）BM25关键词检索
-
-```python
-# BM25 词频表结构
-bm25_index = {
-    "doc_chunk_key": {
-        "filename": "example.pdf",
-        "doc_id": "example",
-        "tf": {"Python": 3, "学习": 5, "计划": 2},  # 词频
-        "length": 500,  # 文档块长度
-        "content": "..."  # 原始内容
-    }
-}
-
-# BM25 评分公式
-score = IDF(term) * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (doc_length / avg_length)))
-```
-（2）向量相似度检索
-
-```python
-# 使用余弦相似度
-query_embedding = embeddings.embed_query(query)
-results = vector_store.similarity_search_by_vector(query_embedding, k=20)
-```
-（3）混合策略
-
-先使用BM25检索top-20候选
-再使用向量检索top-20候选
-合并去重后，使用LLM重排选择top-8
-### 6. LLM重排序（Rerank）
-使用大模型对候选文档进行精排，选择最相关的文档：
-
-重排流程：
-```python
-
-async def rerank_with_llm(query: str, documents: List[Document], top_k: int = 8):
-    """使用LLM对文档进行重排序"""
-    
-    # 构建重排提示词
-    prompt = f"""给定用户问题和以下文档，请按相关性排序（最相关的排前面）。
-
-用户问题：{query}
-
-文档：
-{chr(10).join([f'{i+1}. {doc.page_content[:200]}...' for i, doc in enumerate(documents)])}
-
-请返回最相关的{top_k}个文档编号（如：1,3,5,2...）："""
-    
-    # 调用LLM
-    llm = get_llm()
-    response = await llm.ainvoke(prompt)
-    
-    # 解析结果，返回重排后的文档
-    ranked_indices = parse_ranking(response.content)
-    return [documents[i] for i in ranked_indices[:top_k]]
-```
-### 7. 上下文压缩（Context Compression）
-只保留与问题最相关的句子，减少Token消耗：
-
-压缩流程：
-```python
-
-def compress_context(query: str, documents: List[Document]) -> str:
-    """压缩上下文，只保留相关内容"""
-    
-    # 提取所有句子
-    all_sentences = []
-    for doc in documents:
-        sentences = re.split(r'[。！？!?\n]', doc.page_content)
-        all_sentences.extend([s.strip() for s in sentences if s.strip()])
-    
-    # 计算每个句子与问题的相似性
-    query_embedding = embeddings.embed_query(query)
-    sentence_embeddings = embeddings.embed_documents(all_sentences)
-    
-    # 选择最相关的句子（最多保留3000字）
-    relevant_sentences = []
-    current_length = 0
-    for sentence in sorted_by_relevance(all_sentences, query_embedding):
-        if current_length + len(sentence) > 3000:
-            break
-        relevant_sentences.append(sentence)
-        current_length += len(sentence)
-    
-    return "。".join(relevant_sentences)
-```
-### 8. 完整检索流程
-```python
-async def rag_query(question: str, top_k: int = 8) -> str:
-    """完整的RAG查询流程"""
-    
-    # 1. 问题嵌入
-    query_embedding = embeddings.embed_query(question)
-    
-    # 2. 粗检索（先找更多候选）
-    # 2.1 BM25关键词检索
-    bm25_results = bm25_search(question, top_k=20)
-    
-    # 2.2 向量相似度检索
-    vector_results = vector_store.similarity_search_by_vector(
-        query_embedding, k=20
-    )
-    
-    # 3. 合并去重
-    candidates = merge_and_deduplicate(bm25_results, vector_results)
-    
-    # 4. LLM重排序（选择最相关的top_k个）
-    ranked_docs = await rerank_with_llm(question, candidates, top_k=top_k)
-    
-    # 5. 上下文压缩
-    context = compress_context(question, ranked_docs)
-    
-    # 6. LLM生成答案
-    prompt = f"""基于以下上下文回答用户问题。如果上下文不包含相关信息，请说明。
-
-上下文：
-{context}
-
-用户问题：{question}
-
-请给出详细、准确的回答："""
-    
-    llm = get_llm()
-    answer = await llm.ainvoke(prompt)
-    
-    return answer.content
-```
-### 9. 支持的文档格式
-格式	加载器	说明
-PDF	PyPDFLoader	提取文本，保留页面结构
-DOCX	Docx2txtLoader	Word文档
-PPTX	UnstructuredPowerPointLoader	PowerPoint演示文稿
-XLSX	UnstructuredExcelLoader	Excel表格
-TXT	TextLoader	纯文本文件
-批量	DirectoryLoader	批量加载目录下所有文档
-### 10. 性能优化
-索引持久化：ChromaDB自动持久化到磁盘，重启后无需重新构建
-BM25缓存：BM25索引保存到pickle文件，重启后快速加载
-嵌入缓存：相同文档的嵌入向量缓存，避免重复计算
-批量处理：支持批量上传文档，提高处理效率
-
-## 八、重试和降级机制
-1. 智能重试机制 (ErrorRecoveryService)
-错误分类系统
-你的系统能自动识别8种错误类型：
-
-
-ErrorType.TIMEOUT           # 超时错误
-ErrorType.RATE_LIMIT        # 速率限制  
-ErrorType.SERVICE_UNAVAILABLE # 服务不可用
-ErrorType.INVALID_RESPONSE  # 无效响应
-ErrorType.TOOL_ERROR        # 工具调用错误
-ErrorType.CONTEXT_TOO_LONG  # 上下文过长
-ErrorType.MODEL_ERROR       # 模型错误
-ErrorType.UNKNOWN          # 未知错误
-指数退避重试策略
-
-# 重试延迟计算公式
-delay = min(base_delay * (2 ** retry_count), max_delay)
-
-# 实际重试过程
-第1次重试：延迟 1s  (1 * 2^0)
-第2次重试：延迟 2s  (1 * 2^1) 
-第3次重试：延迟 4s  (1 * 2^2)
-最大延迟：30s
-针对不同错误的重试策略
-
-# 超时错误 → 指数退避重试
-if ErrorType.TIMEOUT:
-    delay = min(1 * (2 ** retry_count), 30)
-    await asyncio.sleep(delay)
-
-# 速率限制 → 更长延迟的重试  
-if ErrorType.RATE_LIMIT:
-    delay = min(1 * (2 ** retry_count) * 2, 30)  # 延迟翻倍
-    await asyncio.sleep(delay)
-
-# 服务不可用 → 直接切换到备用服务
-if ErrorType.SERVICE_UNAVAILABLE:
-    return {"action": "fallback_to_backup_service"}
-2. 5级降级策略 (FallbackService)
-降级级别定义
-
-class DegradationLevel(Enum):
-    NORMAL = 0          # 完全正常，使用主服务
-    BACKUP_MODEL = 1    # 切换到备用模型
-    BACKUP_SERVICE = 2  # 切换到备用服务  
-    CORE_ONLY = 3       # 只保留核心功能
-    CACHE_ONLY = 4      # 只返回缓存结果
-自动降级触发条件
-
-# 触发条件
-self.failure_threshold = 3        # 连续失败3次
-self.response_time_threshold = 10  # 响应时间超过10秒
-self.error_rate_threshold = 0.5    # 错误率超过50%
-
-# 自动降级流程
-NORMAL → BACKUP_MODEL → BACKUP_SERVICE → CORE_ONLY → CACHE_ONLY
-具体降级实现
-
-# Level 0: 正常状态
-if current_level == NORMAL:
-    try:
-        result = await primary_func(messages, tools)
-        record_success()
-    except:
-        record_failure()
-
-# Level 1: 备用模型
-if current_level == BACKUP_MODEL:
-    try:
-        result = await backup_func(messages, tools)  # 使用备用模型
-    except:
-        degrade()  # 继续降级
-
-# Level 3: 只保留核心功能
-if current_level == CORE_ONLY:
-    result = await primary_func(messages, tools=None)  # 禁用工具
-
-# Level 4: 只返回缓存
-if current_level == CACHE_ONLY:
-    return get_cached_response()  # 返回缓存结果
-3. 智能恢复机制
-恢复策略
-
-# 恢复条件：故障后5分钟无新故障
-if time_since_last_failure > 300:  # 5分钟
-    if current_level == CACHE_ONLY:
-        current_level = CORE_ONLY
-    elif current_level == CORE_ONLY:
-        current_level = BACKUP_SERVICE
-    elif current_level == BACKUP_SERVICE:
-        current_level = BACKUP_MODEL
-    elif current_level == BACKUP_MODEL:
-        current_level = NORMAL
-状态持久化
-
-# 状态保存到Redis
-state = {
-    "current_level": self.current_level.value,
-    "failure_count": self.failure_count,
-    "last_failure_time": self.last_failure_time,
-    "stats": self.stats
-}
-redis.setex("fallback:state", 3600, json.dumps(state))
-4. 实际工作流程示例
-用户请求处理流程
-
-graph TD
-    A[用户请求] --> B{当前降级级别}
-    B -->|NORMAL| C[调用主模型]
-    B -->|BACKUP_MODEL| D[调用备用模型]
-    B -->|CORE_ONLY| E[禁用工具调用]
-    B -->|CACHE_ONLY| F[返回缓存]
-    
-    C --> G{是否成功?}
-    G -->|是| H[记录成功]
-    G -->|否| I[记录失败]
-    
-    D --> J{是否成功?}
-    J -->|是| H
-    J -->|否| I
-    
-    I --> K{连续失败>=3次?}
-    K -->|是| L[自动降级]
-    K -->|否| M[指数退避重试]
-    
-    L --> N[更新降级级别]
-    N --> O[保存状态到Redis]
-    
-    H --> P{当前是否降级?}
-    P -->|是| Q{5分钟内无故障?}
-    Q -->|是| R[自动恢复]
-    Q -->|否| S[保持当前级别]
-具体代码执行流程
-
-# 1. 尝试主模型
-try:
-    result = await asyncio.wait_for(
-        primary_func(messages, tools),
-        timeout=10  # 10秒超时
-    )
-    await record_success()
-    return result
-except asyncio.TimeoutError:
-    await record_failure("timeout")
-    
-# 2. 重试机制
-if failure_count < 3:
-    delay = min(1 * (2 ** retry_count), 30)
-    await asyncio.sleep(delay)
-    # 重试...
-    
-# 3. 降级机制
-if failure_count >= 3:
-    current_level = BACKUP_MODEL  # 切换到备用模型
-    result = await backup_func(messages, tools)
-    
-# 4. 所有模型都失败
-return {
-    "content": "抱歉，当前服务暂时不可用，请稍后再试。",
-    "model": "default",
-    "error": True
-}
-5. 关键特性总结
-5.1 重试机制特点
- 智能错误分类：8种错误类型，针对性处理
- 指数退避：避免雪崩效应
- 最大重试次数：最多3次重试
- 延迟上限：最大30秒延迟
-5.2 降级机制特点
- 5级降级策略：从备用模型到缓存响应
- 自动触发：连续失败3次自动降级
- 智能恢复：故障后5分钟无新故障自动恢复
- 状态持久化：降级状态保存到Redis
-5,3 监控和统计
- 失败计数：记录连续失败次数
- 成功/失败统计：详细的使用统计
- 降级级别追踪：实时监控系统状态
- 自动恢复检测：定期检测是否可恢复
-这套机制确保了系统的高可用性，即使在AI服务不稳定的情况下，也能为用户提供持续的服务
-
-## 九、安全架构
-
-### 多层安全防护
-
-1. **前端 → Java后端**
-   - JWT Bearer Token认证
-   - BCrypt密码加密
-
-2. **Java后端 → Python AI服务（安全网关模式）**
-   - 内部API密钥认证（X-Internal-Api-Secret Header）
-   - 仅监听127.0.0.1，不暴露到外部网络
-
-### Java后端转发请求到Python的完整流程
-
-Java后端作为**安全网关**，负责转发请求到Python AI服务：
-
-**架构图：**
+## 四、项目结构
 
 ```
-前端 → Java后端（验证JWT） → 添加内部密钥 → Python AI服务（仅监听127.0.0.1）
+planhub2.0/
+├── backend/                # Java 后端
+│   └── src/main/java/com/planhub/
+│       ├── controller/     # 16 个 REST 控制器
+│       ├── service/        # 业务逻辑层
+│       ├── entity/         # 数据库实体
+│       └── mapper/         # MyBatis 映射器
+├── frontend/               # React 前端
+│   └── src/
+│       ├── pages/          # 页面组件
+│       ├── components/     # 通用组件
+│       └── services/       # API 服务层
+├── py_agent/               # Python AI 服务
+│   └── src/app/
+│       ├── api/            # API 路由（rag.py、chat.py 等）
+│       ├── orchestrator/   # LangGraph 编排器
+│       │   ├── graph.py    # StateGraph 定义（节点、边、路由）
+│       │   ├── nodes/      # 各节点实现
+│       │   └── state.py    # AgentState 定义
+│       ├── service/        # 业务服务（agent_service、memory_service）
+│       └── common/         # 公共工具（langchain_tools、mcp_tools、llm_factory）
+└── planhub_schema.sql      # 数据库建表脚本
 ```
 
-**转发机制（AIController.java）：**
-
-```java
-@RestController
-@RequestMapping("/api/ai")
-public class AIController {
-    
-    // 构建内部请求Header
-    private HttpHeaders buildInternalHeaders(String contentType, String jwtToken) {
-        HttpHeaders headers = new HttpHeaders();
-        // 1. 添加内部密钥（防止外部直接访问Python）
-        headers.set("X-Internal-Api-Secret", internalSecret);
-        // 2. 传递用户JWT Token（Python调用Java API时需要）
-        headers.set("Authorization", "Bearer " + jwtToken);
-        return headers;
-    }
-    
-    // 转发JSON POST请求
-    private ResponseEntity<Map> forwardJsonPost(String path, Map body,
-            Authentication auth, HttpServletRequest request) {
-        String url = aiServiceUrl + path;
-        String userId = getCurrentUserId(auth);
-        String jwtToken = extractJwtToken(request);
-        
-        // 确保请求体中包含user_id
-        body.putIfAbsent("user_id", userId);
-        
-        HttpHeaders headers = buildInternalHeaders("application/json", jwtToken);
-        HttpEntity<Map> entity = new HttpEntity<>(body, headers);
-        
-        return restTemplate.postForEntity(url, entity, Map.class);
-    }
-}
-```
-
-**转发流程：**
-
-1. 前端请求 `POST /api/ai/orchestrator/chat`（携带JWT Token）
-2. Java后端验证JWT Token，提取 `user_id`
-3. 构建新请求，添加 `X-Internal-Api-Secret` 内部密钥
-4. 转发到 `http://127.0.0.1:8000/orchestrator/chat`
-5. Python验证内部密钥，处理请求
-6. 返回响应给Java，再返回给前端
-
-**安全隔离：**
-
-- Python服务仅监听 `127.0.0.1:8000`，不暴露到外部网络
-- 必须携带正确的 `X-Internal-Api-Secret` 才能访问
-- JWT Token通过Header传递，Python可调用需认证的Java API
+---
 
 
+## 许可证
 
-## 十、许可证
-
-本项目使用 [MIT License](LICENSE) 许可证。
-
-
-** 如果这个项目对你有帮助，请给我们一个Star！**
+[MIT License](LICENSE)

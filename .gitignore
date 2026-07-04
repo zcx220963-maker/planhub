@@ -91,5 +91,20 @@ uploads/
 jwt-secret.txt
 secret-key.txt
 
+# 本地 Maven 配置（含个人路径）
+backend/settings.xml
+
 # 临时文件（测试脚本、旧代码、个人文档）
 temp/
+
+# 废弃代码（已不使用，保留本地但不提交）
+py_agent/src/app/orchestrator/nodes/plan_builder.py
+
+# 个人文档（不提交）
+提示词与示例图/
+
+# HTML 页面原型（不提交）
+html页面原型/
+
+# 课程设计报告等个人文档
+docs/课程设计报告_提示词工程与架构设计.md

@@ -126,6 +126,7 @@ def get_llm(temperature: float = 0.7, force_ollama: bool = False):
                 api_key=settings.DASHSCOPE_API_KEY,
                 base_url=settings.DASHSCOPE_API_BASE,
                 temperature=temperature,
+                max_tokens=4096,
             )
             print(f"[INFO] 使用阿里云百炼模型: {settings.DASHSCOPE_MODEL}")
             return _wrap_with_token_stats(base_llm, fallback_model=_build_ollama_llm(temperature))
@@ -140,13 +141,33 @@ def get_llm(temperature: float = 0.7, force_ollama: bool = False):
 def _build_ollama_llm(temperature: float = 0.7):
     """构建一个纯 Ollama LLM 实例（不带包装）
     使用 ChatOllama 而不是 OllamaLLM，因为 ChatOllama 支持 Tool Calling
+
+    注意：创建后替换内部 httpx.Client，使用独立运输层绕过系统代理。
+    外网 API 调用不受影响，正常走系统代理。
     """
     from langchain_ollama import ChatOllama
-    return ChatOllama(
+    import httpx
+    import ollama
+
+    llm = ChatOllama(
         base_url=settings.OLLAMA_API_URL,
         model=settings.OLLAMA_MODEL,
         temperature=temperature,
+        num_predict=4096,
     )
+
+    # 创建一个禁用了代理的 httpx Client，保留原有 base_url
+    old_httpx_client = llm._client._client
+    transport = httpx.HTTPTransport(retries=2)
+    llm._client._client = httpx.Client(
+        transport=transport,
+        base_url=old_httpx_client.base_url,
+        follow_redirects=old_httpx_client.follow_redirects,
+        timeout=old_httpx_client.timeout,
+        headers=old_httpx_client.headers,
+    )
+
+    return llm
 
 
 def _wrap_with_token_stats(base_llm, fallback_model):
@@ -175,6 +196,31 @@ def _wrap_with_token_stats(base_llm, fallback_model):
                         result = self._fallback.invoke(messages, *args, **kwargs)
                     except Exception as fallback_err:
                         print(f"[LLM Fallback] ollama 也失败: {fallback_err}")
+                        raise
+                else:
+                    raise
+
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            prompt_text = ""
+            if isinstance(messages, list):
+                prompt_text = "\n".join(
+                    [str(getattr(m, "content", "")) for m in messages if hasattr(m, "content")]
+                )
+            _record_usage(result, prompt_text, latency_ms)
+            return result
+
+        async def ainvoke(self, messages, *args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                result = await self._primary.ainvoke(messages, *args, **kwargs)
+            except Exception as primary_err:
+                if self._fallback is not None:
+                    print(f"[LLM Fallback] primary 异步调用失败: {primary_err}；降级到 Ollama")
+                    t0 = time.perf_counter()
+                    try:
+                        result = await self._fallback.ainvoke(messages, *args, **kwargs)
+                    except Exception as fallback_err:
+                        print(f"[LLM Fallback] ollama 异步调用也失败: {fallback_err}")
                         raise
                 else:
                     raise
@@ -219,14 +265,16 @@ def get_embeddings(force_ollama: bool = False):
     """
     # RAG 直接使用本地 Ollama 嵌入模型，跳过阿里云
     from langchain_ollama import OllamaEmbeddings
-    
-    # 使用配置的嵌入模型（bge-m3）
+    import httpx
+
     embed_model = settings.OLLAMA_EMBEDDING_MODEL or "bge-m3"
     print(f"[INFO] 使用本地 Ollama 嵌入模型: {embed_model}")
-    
+
+    transport = httpx.HTTPTransport(retries=2)
     return OllamaEmbeddings(
         base_url=settings.OLLAMA_API_URL,
         model=embed_model,
+        client_kwargs={"transport": transport},
     )
 
 

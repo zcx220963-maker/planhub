@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
     USE_REDIS: str = os.getenv("USE_REDIS", "true")
 
+    # ── 高德天气 API ─────────────────────────────────────────
+    AMAP_API_KEY: str = os.getenv("AMAP_API_KEY", "")
+
     # ── 内部鉴权密钥 ─────────────────────────────────────────
     # Java 后端调用 Python AI 服务时使用的内部密钥
     # 必须和 Java application.yml 的 ai.service.internal-secret 一致

@@ -48,30 +48,37 @@ const Community: React.FC = () => {
 
   const buildNestedComments = (commentsList: Comment[]): CommentWithReplies[] => {
     const commentMap = new Map<number, CommentWithReplies>();
-    const nestedComments: CommentWithReplies[] = [];
-    const childCommentIds = new Set<number>();
+    const topLevelComments: CommentWithReplies[] = [];
+    const childComments: CommentWithReplies[] = [];
 
     commentsList.forEach(comment => {
       commentMap.set(comment.id, { ...comment, replies: [] });
-      if (comment.parentCommentId !== undefined && comment.parentCommentId !== null) {
-        childCommentIds.add(comment.id);
-      }
     });
+
+    const findTopLevelParent = (commentId: number): number | null => {
+      const comment = commentMap.get(commentId);
+      if (!comment) return null;
+      if (!comment.parentCommentId) return commentId;
+      return findTopLevelParent(comment.parentCommentId);
+    };
 
     commentsList.forEach(comment => {
-      if (comment.parentCommentId !== undefined && comment.parentCommentId !== null && commentMap.has(comment.parentCommentId)) {
-        const parent = commentMap.get(comment.parentCommentId)!;
-        parent.replies!.push(commentMap.get(comment.id)!);
+      if (!comment.parentCommentId) {
+        topLevelComments.push(commentMap.get(comment.id)!);
+      } else {
+        childComments.push(commentMap.get(comment.id)!);
       }
     });
 
-    commentsList.forEach(comment => {
-      if (!childCommentIds.has(comment.id)) {
-        nestedComments.push(commentMap.get(comment.id)!);
+    childComments.forEach(child => {
+      const topParentId = findTopLevelParent(child.parentCommentId!);
+      if (topParentId && commentMap.has(topParentId)) {
+        const topParent = commentMap.get(topParentId)!;
+        topParent.replies!.push(child);
       }
     });
 
-    return nestedComments;
+    return topLevelComments;
   };
 
   const getAvatarUrl = (avatarUrl?: string) => {
@@ -1641,9 +1648,13 @@ const styles: { [key: string]: React.CSSProperties } = {
   planDescription: {
     fontSize: '12px',
     color: '#64748b',
+    lineHeight: '1.5',
+    display: '-webkit-box',
+    WebkitLineClamp: 2,
+    WebkitBoxOrient: 'vertical',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    whiteSpace: 'pre-line',
   },
   planOwner: {
     fontSize: '11px',

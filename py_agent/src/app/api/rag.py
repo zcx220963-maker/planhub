@@ -227,8 +227,8 @@ def init_document_indices(user_id: str = "default"):
         return 0
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500, chunk_overlap=50,
-        separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""],
+        chunk_size=800, chunk_overlap=100,
+        separators=["\n\n", "\n", "(?<=[。！？；;])", ",", " ", ""],
     )
 
     loaded = 0
@@ -273,21 +273,25 @@ def init_document_indices(user_id: str = "default"):
 def init_qa_chain():
     """初始化问答链（备用，当前主要使用函数式调用）"""
     global qa_chain
-    llm = get_llm(0.3)
-    # 使用默认用户的向量库初始化 qa_chain
-    store = get_or_create_user_vector_store("default")
-    from langchain_core.prompts import ChatPromptTemplate
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "你是一个知识库助手。请根据以下上下文回答用户的问题。\n\n上下文：\n{context}"),
-        ("human", "{question}")
-    ])
-    def format_docs(docs):
-        return "\n\n".join([doc.page_content for doc in docs])
-    qa_chain = (
-        {"context": store.as_retriever(search_kwargs={"k": 3}) | format_docs,
-         "question": RunnablePassthrough()}
-        | prompt | llm | StrOutputParser()
-    )
+    try:
+        llm = get_llm(0.3)
+        store = get_or_create_user_vector_store("default")
+        from langchain_core.prompts import ChatPromptTemplate
+        from langchain_core.runnables import RunnablePassthrough
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", "你是一个知识库助手。请根据以下上下文回答用户的问题。\n\n上下文：\n{context}"),
+            ("human", "{question}")
+        ])
+        def format_docs(docs):
+            return "\n\n".join([doc.page_content for doc in docs])
+        qa_chain = (
+            {"context": store.as_retriever(search_kwargs={"k": 3}) | format_docs,
+             "question": RunnablePassthrough()}
+            | prompt | llm
+        )
+    except Exception as e:
+        print(f"[WARN] qa_chain 初始化失败（非关键）: {e}")
+        qa_chain = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -300,16 +304,32 @@ BM25_B = 0.75  # 文档长度归一化系数
 
 
 def tokenize(text: str) -> List[str]:
-    """极简分词：
-    - 中文字符单字切分（无需额外分词库）
+    """分词策略：
     - 英文按空格+标点切分，转小写
-    这是 BM25 的保守实现，足以区分文档主题，但对具体词查询有效
+    - 中文：优先按双字切分（增加词汇级匹配），同时保留单字（确保召回率）
+    - 数字和单位保留（如"50s", "30秒"）
+    这样既能保证召回率，又能提高关键词匹配精度
     """
     text = text.lower()
     tokens = []
-    # 中文单字 + 英文单词
-    pattern = re.compile(r"[a-z0-9]+|[\u4e00-\u9fa5]")
-    tokens = pattern.findall(text)
+    
+    # 先提取英文单词和数字（如50s, 30秒）
+    pattern = re.compile(r"[a-z0-9]+s?|[\u4e00-\u9fa5]+")
+    raw_tokens = pattern.findall(text)
+    
+    for token in raw_tokens:
+        if re.match(r"[a-z0-9]+", token):
+            # 英文/数字，直接添加
+            tokens.append(token)
+        else:
+            # 中文，双字切分 + 单字切分
+            chars = list(token)
+            # 添加双字组合
+            for i in range(len(chars) - 1):
+                tokens.append(chars[i] + chars[i+1])
+            # 添加单字（确保召回率）
+            tokens.extend(chars)
+    
     return tokens
 
 
@@ -735,9 +755,10 @@ def hybrid_search(query: str, top_k: int = 3, fetch_k: int = 20,
                     "bm25_score": score_norm,
                 }
 
-    # 计算最终融合分数（加权平均: 向量 0.6, BM25 0.4）
-    VECTOR_WEIGHT = 0.6
-    BM25_WEIGHT = 0.4
+    # 计算最终融合分数（加权平均: 向量 0.5, BM25 0.5）
+    # 增加BM25权重，让关键词匹配更重要，避免语义相似但不含关键信息的文档被优先选中
+    VECTOR_WEIGHT = 0.5
+    BM25_WEIGHT = 0.5
     ranked = []
     for key, info in merged.items():
         final_score = VECTOR_WEIGHT * info["vector_score"] + BM25_WEIGHT * info["bm25_score"]
@@ -1059,28 +1080,41 @@ async def query_rag(request: RAGQueryRequest):
             # 系统提示：结构化 + 思维链引导 + 引用标注 + Few-shot 示例
             system_prompt = f"""你是 PlanHub 知识库助手，基于下方"文档片段"回答用户问题。
 
-【核心规则】
-1. 只使用文档片段中的信息回答问题，可以基于文档内容进行分析、总结和归纳
-2. 如果文档片段中完全没有与问题相关的信息，明确回答："在知识库中未找到相关信息"
-3. 回答中引用的每一点信息，都要标注来源（格式：[来源: 文档文件名#片段序号]）
-4. 如果多个文档片段说同一件事，综合起来回答，并分别标注引用
-5. 对于分析、总结类问题，先提取文档中的关键信息，再进行综合分析和归纳
+【核心规则 — 严格遵守】
+1. **禁止引入外部知识**：只使用文档片段中的信息回答问题。即使你有相关的先验知识，也只能输出文档中存在的内容。
+2. **以文档为准**：如果文档内容与你的先验知识冲突，**必须以文档为准**，忽略你的先验知识。
+3. **禁止编造信息**：文档中没有提到的信息，绝对不要编造出来。如果文档内容不完整，只回答文档中已有的部分。
+4. **完全无关时**：如果文档片段中完全没有与问题相关的信息，明确回答："在知识库中未找到相关信息"
+5. **必须标注来源**：回答中引用的每一点信息，都要标注来源（格式：[来源: 文档文件名#片段序号]）
+6. **表格内容处理**：如果文档包含表格（如教育作用、教育对象、教学内容等分类），要完整提取每个分类下的内容，不要遗漏任何一行。
+7. **严格逻辑一致性**：回答中的结论必须与文档中的事实一致，不得自相矛盾。特别是涉及数字、限制、条件的问题，要严格按照文档给出的约束推导，不能得出与文档相反的结论。
+8. **数字/限制类问题检查**：如果文档说"X不能超过N"，那么任何大于N的值都是不允许的；如果文档说"X超过N就会失败"，那么比N更大的值也会失败。
 
 【思维链指引 — 回答前按以下步骤在心里完成】
 Step 1: 分析用户想知道什么？核心关键词有哪些？
 Step 2: 在文档片段中逐条搜索与这些关键词相关的内容
-Step 3: 把找到的信息点整理为 2-4 个要点，每个要点标注来源
-Step 4: 如果没有任何相关信息 → 直接回复"在知识库中未找到相关信息"
-Step 5: 如果有信息 → 用自然语言综合要点，给出最终回答；如果是分析类问题，对提取的信息进行深度分析
+Step 3: 如果文档包含表格或结构化内容，识别所有分类维度（如教育作用、教育对象、教学内容等），确保每个维度都被覆盖
+Step 4: 把找到的信息点整理为要点，每个要点标注来源
+Step 5: 如果没有任何相关信息 → 直接回复"在知识库中未找到相关信息"
+Step 6: 如果有信息 → 用自然语言综合要点，给出最终回答；如果是分析类问题，对提取的信息进行深度分析
+Step 7: **自我检查**：
+   - 回答中的结论是否与文档中的所有事实一致？有没有自相矛盾的地方？
+   - 是否引入了文档中没有的外部知识？
+   - 是否遗漏了文档中的关键信息点？
 
-【Few-shot 示例】
-片段 1 [来源: tech_stack.md#1]: 前端框架采用 React 18，使用 JavaScript 编写。
-片段 2 [来源: tech_stack.md#2]: 后端采用 Java Spring Boot 3，数据库为 MySQL 8。
-用户: 这个项目的技术栈是什么？
-模型: 关键信息点：
-  1. [来源: tech_stack.md#1] 前端框架: React 18
-  2. [来源: tech_stack.md#2] 后端框架: Java Spring Boot 3，数据库: MySQL 8
-综合回答：本项目的技术栈为前端 React 18 + 后端 Java Spring Boot 3 + MySQL 8 数据库。
+【Few-shot 示例 — 表格内容处理】
+片段 1 [来源: 教育笔记.pdf#1]: 教育作用：庶、富、教。性相近，习相远。教育对象：有教无类。教学内容：文、行、忠、义。教学原则：因材施教、启发诱导。
+用户: 孔子的教育思想是什么？
+模型: 根据文档内容，孔子的教育思想包括：
+  1. [来源: 教育笔记.pdf#1] 教育作用：庶、富、教；性相近，习相远
+  2. [来源: 教育笔记.pdf#1] 教育对象：有教无类
+  3. [来源: 教育笔记.pdf#1] 教学内容：文、行、忠、义
+  4. [来源: 教育笔记.pdf#1] 教学原则：因材施教、启发诱导
+
+【外部知识冲突反例（不要学）】
+文档只提到孔子的"仁、义、礼"，没有提到"四维"
+错误回答："孔子的思想包括仁、义、礼，以及四维（礼、义、廉、耻）"
+正确回答："[来源: xxx.pdf#1] 孔子的核心思想包括仁、义、礼"
 
 【文档片段】
 {context}
@@ -1291,8 +1325,8 @@ async def process_uploaded_files(files: list[UploadFile], user_id: str = "defaul
         # 使用 RecursiveCharacterTextSplitter：优先按段落/句子切分，语义更完整
         # 相对 CharacterTextSplitter：不会在段落中间一刀切
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,        # 每块最大字符数（比之前的 300 大，更有上下文）
-            chunk_overlap=50,      # 相邻块的重叠字符（保留上下文）
+            chunk_size=800,        # 增大chunk大小，避免表格内容被切断
+            chunk_overlap=100,     # 增大重叠，保留更多上下文
             length_function=len,
             # 切分优先级：双换行 → 单换行 → 句子分隔符 → 逗号 → 空格 → 字符
             separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""],

@@ -1,77 +1,89 @@
 """
 Extract Plan Title节点 - 从计划文本中提取标题
-
-策略：
-1. 从第一行提取标题（去除 markdown 标记）
-2. 如果第一行不合适，根据计划类型生成默认标题
-3. 标题最多50字符
+使用 LLM 准确提炼，不再靠正则猜。
 """
-
-import re
 
 
 async def extract_plan_title_node(state) -> dict:
-    """Extract Plan Title节点：从计划文本中提取标题"""
-    
+    """Extract Plan Title节点：用 LLM 从计划文本中提取标题"""
+
     print(f"[DEBUG] extract_plan_title: entering node")
-    
+
     plan_text = state.get("plan_text_cache", "")
     plan_type = state.get("plan_type", "learning")
-    
+
     print(f"[DEBUG] extract_plan_title: plan_text length={len(plan_text)}, plan_type={plan_type}")
-    
-    # 1. 尝试从第一行提取标题
-    lines = plan_text.split("\n")
+
+    type_names = {
+        "learning": "学习计划",
+        "health": "健康计划",
+        "travel": "旅行计划",
+        "work": "工作计划",
+        "finance": "财务计划",
+    }
+
     title = ""
-    
-    for line in lines:
-        line = line.strip()
-        # 跳过空行、markdown标题标记、分隔线
-        if not line:
-            continue
-        if line.startswith("#"):
-            # 去除 markdown 标题标记
-            line = line.lstrip("#").strip()
-        if line.startswith("---") or line.startswith("==="):
-            continue
-        if line.startswith("-") or line.startswith("*"):
-            continue
-        
-        # 找到第一个有效行作为标题
-        if len(line) > 5:
-            title = line[:50]  # 最多50字符
-            break
-    
-    # 2. 如果没有找到有效标题，根据计划类型生成默认标题
-    if not title or title == "":
-        type_names = {
-            "learning": "学习计划",
-            "health": "健康计划",
-            "travel": "旅行计划",
-            "work": "工作计划",
-            "finance": "财务计划"
-        }
-        title = type_names.get(plan_type, "计划")
-    
-    # 3. 清理标题（去除特殊字符）
-    title = re.sub(r'[【】\[\]《》]', '', title)
-    title = title.strip()
-    
-    # 4. 确保标题不为空
-    if not title:
-        title = "计划"
-    
+
+    try:
+        from app.common.llm_factory import get_llm
+        from langchain_core.messages import HumanMessage
+
+        prompt = f"""你是计划标题提取器。阅读下面的计划内容，提取一个简洁、具体、有信息量的中文标题。
+
+要求：
+- 4-10个字
+- 必须体现计划的核心主题（如地点、目标、领域）
+- 不要标点符号
+- 只输出标题本身，不要任何解释、引号、前缀
+
+示例：
+计划内容提到杭州、西湖、灵隐寺 → 杭州三日游计划
+计划内容提到考研、英语、数学 → 考研复习冲刺计划
+计划内容提到减肥、跑步、饮食 → 科学减重健身计划
+
+计划内容：
+{plan_text[:1500]}
+
+标题："""
+
+        llm = get_llm(temperature=0.3)
+        result = llm.bind(max_tokens=30).invoke([HumanMessage(content=prompt)])
+        raw = result.content if hasattr(result, 'content') else str(result)
+        # 清理：取第一行，去除标点和空白
+        raw = raw.strip().split("\n")[0]
+        title = raw.strip().strip('"').strip("'").strip("：:").strip()
+
+        if len(title) > 20:
+            title = title[:20]
+
+        print(f"[DEBUG] extract_plan_title: LLM提取标题='{title}'")
+
+    except Exception as e:
+        print(f"[WARN] extract_plan_title: LLM提取失败: {e}，使用回退方案")
+
+    # 兜底：LLM 返回空或太短时，用 plan_summary 让 LLM 再试一次
+    if not title or len(title) < 2:
+        plan_summary = state.get("plan_summary", "")
+        if plan_summary:
+            retry_prompt = f"""为以下计划生成一个4-10字的中文标题，只输出标题：{plan_summary[:300]}"""
+            try:
+                result = llm.invoke([HumanMessage(content=retry_prompt)])
+                title = result.content.strip().split("\n")[0].strip().strip('"').strip("'").strip("：:").strip()
+            except Exception:
+                pass
+        if not title or len(title) < 2:
+            title = type_names.get(plan_type, "我的计划")
+
     return {
         "plan_title": title,
-        "plan_text_cache": plan_text,  # 保持缓存
+        "plan_text_cache": plan_text,
         "execution_trace": [
-            *state.get("execution_trace", []),
             {
                 "node": "extract_plan_title",
                 "plan_type": plan_type,
                 "extracted_title": title,
                 "title_length": len(title),
-                "success": True
+                "success": True,
             }
         ]
     }

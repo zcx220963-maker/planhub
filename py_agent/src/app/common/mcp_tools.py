@@ -130,7 +130,7 @@ def get_weather_forecast(city: str, days: int = 7) -> Dict[str, Any]:
         # 先获取城市坐标
         geo_url = "https://geocoding-api.open-meteo.com/v1/search"
         geo_params = {"name": city, "count": 1, "language": "zh"}
-        geo_response = requests.get(geo_url, params=geo_params, timeout=10)
+        geo_response = requests.get(geo_url, params=geo_params, timeout=15)
 
         if geo_response.status_code != 200:
             return {"error": f"城市定位失败（HTTP {geo_response.status_code}）", "forecast": []}
@@ -139,7 +139,7 @@ def get_weather_forecast(city: str, days: int = 7) -> Dict[str, Any]:
         if not geo_data:
             # 尝试使用英文搜索
             geo_params["language"] = "en"
-            geo_response = requests.get(geo_url, params=geo_params, timeout=10)
+            geo_response = requests.get(geo_url, params=geo_params, timeout=15)
             if geo_response.status_code == 200:
                 geo_data = geo_response.json().get("results", [])
 
@@ -162,7 +162,7 @@ def get_weather_forecast(city: str, days: int = 7) -> Dict[str, Any]:
             "timezone": "Asia/Shanghai",
             "forecast_days": days
         }
-        weather_response = requests.get(weather_url, params=weather_params, timeout=10)
+        weather_response = requests.get(weather_url, params=weather_params, timeout=15)
 
         if weather_response.status_code == 200:
             data = weather_response.json()
@@ -188,7 +188,7 @@ def _parse_weather_code(code: int) -> str:
         61: "小雨", 63: "中雨", 65: "大雨", 71: "小雪",
         73: "中雪", 75: "大雪", 77: "雪粒", 80: "小阵雨",
         81: "中阵雨", 82: "大阵雨", 85: "小阵雪", 86: "大阵雪",
-        95: "雷暴", 96: "雷暴+小冰雹", 99: "雷暴+大冰雹"
+        95: "雷阵雨", 96: "雷阵雨", 99: "雷阵雨"
     }
     return weather_map.get(code, "未知")
 
@@ -594,6 +594,8 @@ def get_themealdb(query: str = "", random: bool = False) -> Dict[str, Any]:
     """
     try:
         api_key = "1"  # 测试 Key，免费使用
+        if not query and not random:
+            return {"error": "请提供搜索关键词或启用随机", "meals": [], "source": "TheMealDB"}
         if random:
             url = f"https://www.themealdb.com/api/json/v1/{api_key}/random.php"
         else:
@@ -607,6 +609,8 @@ def get_themealdb(query: str = "", random: bool = False) -> Dict[str, Any]:
         if response.status_code == 200:
             data = response.json()
             meals = data.get("meals", [])
+            if isinstance(meals, str):
+                return {"error": meals, "meals": [], "source": "TheMealDB"}
             if meals:
                 result_meals = []
                 for meal in meals[:3]:  # 最多返回3个
@@ -646,8 +650,8 @@ def get_wger_exercises(muscle: int = None, category: int = None, limit: int = 5)
         limit: 返回数量
     """
     try:
-        url = "https://wger.de/api/v2/exercise/"
-        params = {"language": 2, "limit": limit}  # language=2 是中文
+        url = "https://wger.de/api/v2/exerciseinfo/"
+        params = {"language": 2, "limit": limit}  # language=2 是英文
         
         if muscle:
             params["muscles"] = muscle
@@ -659,16 +663,30 @@ def get_wger_exercises(muscle: int = None, category: int = None, limit: int = 5)
             data = response.json()
             exercises = []
             for ex in data.get("results", []):
+                # name 在 translations 里
+                name = "未知"
+                desc = ""
+                for t in ex.get("translations", []):
+                    if t.get("language") == 2:  # 英文
+                        name = t.get("name", "未知")
+                        desc = t.get("description", "")[:200] if t.get("description") else ""
+                        break
+                if name == "未知" and ex.get("translations"):
+                    name = ex["translations"][0].get("name", "未知")
+
+                cat_name = ""
+                if ex.get("category") and isinstance(ex["category"], dict):
+                    cat_name = ex["category"].get("name", "")
+
                 exercises.append({
-                    "name": ex.get("name", "未知"),
-                    "description": ex.get("description", "")[:300] if ex.get("description") else "",
-                    "muscles": ex.get("muscles", []),
-                    "equipment": ex.get("equipment", []),
-                    "category": ex.get("category", ""),
+                    "name": name,
+                    "description": desc,
+                    "category": cat_name,
+                    "muscles": [m.get("name", "") for m in ex.get("muscles", [])[:2]],
                     "id": ex.get("id", ""),
                 })
             return {
-                "exercises": exercises, 
+                "exercises": exercises,
                 "count": len(exercises),
                 "total": data.get("count", 0),
                 "source": "wger 运动库 (wger.de)"
@@ -758,6 +776,220 @@ def get_amap_weather(city: str = "北京") -> Dict[str, Any]:
         return {"error": f"获取天气失败: {str(e)}", "source": "高德天气"}
 
 
+# ─── 通用与趣味工具 API ─────────────────────────────────────────
+
+def get_bored_activity(activity_type: Optional[str] = None) -> Dict[str, Any]:
+    """获取随机休闲活动推荐（免费，无需 Key）- Bored API
+
+    当用户感到无聊、想找点事做、需要居家活动建议时使用。
+    可按活动类型过滤：education(学习)、recreational(娱乐)、social(社交)、
+    diy(手工)、charity(公益)、cooking(烹饪)、relaxation(放松)、music(音乐)、busywork(杂活)
+
+    Args:
+        activity_type: 可选，活动类型过滤
+    """
+    try:
+        url = "https://www.boredapi.com/api/activity"
+        params = {}
+        if activity_type:
+            params["type"] = activity_type
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if "activity" in data:
+                return {
+                    "activity": data.get("activity", ""),
+                    "type": data.get("type", ""),
+                    "participants": data.get("participants", 1),
+                    "price": data.get("price", 0),  # 0=免费，1=昂贵
+                    "link": data.get("link", ""),
+                    "accessibility": data.get("accessibility", 0)  # 0=易，1=难
+                }
+            return {"error": "未获取到活动建议"}
+        return {"error": "获取休闲活动失败"}
+    except Exception as e:
+        return {"error": f"获取休闲活动失败: {str(e)}"}
+
+
+def get_wikipedia_summary(query: str, lang: str = "zh") -> Dict[str, Any]:
+    """获取维基百科词条摘要（免费，无需 Key）
+
+    查询任何名词、人物、地点、概念、技术等的百科知识。
+    支持50+语言，包括中文(zh)和英文(en)。
+
+    Args:
+        query: 查询关键词（人物、地点、概念等）
+        lang: 语言代码，默认zh(中文)，可选en(英文)
+    """
+    try:
+        from urllib.parse import quote
+        # 维基百科API端点（对中文query做URL编码）
+        encoded_query = quote(query, safe="")
+        wiki_url = f"https://{lang}.wikipedia.org/api/rest_v1/page/summary/{encoded_query}"
+        headers = {
+            "User-Agent": "PlanHubAI/1.0 (https://github.com/planhub)"
+        }
+        response = requests.get(wiki_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "title": data.get("title", ""),
+                "description": data.get("description", ""),
+                "extract": data.get("extract", ""),  # 摘要文本
+                "url": data.get("content_urls", {}).get("desktop", {}).get("page", ""),
+                "thumbnail": data.get("thumbnail", {}).get("source", ""),
+                "lang": lang
+            }
+        elif response.status_code == 404:
+            # 中文找不到，尝试英文回退
+            if lang == "zh":
+                return get_wikipedia_summary(query, lang="en")
+            return {"error": f"未找到词条: {query}"}
+        return {"error": f"获取百科失败（HTTP {response.status_code}）"}
+    except Exception as e:
+        return {"error": f"获取维基百科失败: {str(e)}"}
+
+
+def get_quotable_quote(category: Optional[str] = None) -> Dict[str, Any]:
+    """获取随机英文名人名言（免费，无需 Key）- Quotable
+
+    返回一句随机的英文名言，包含作者和标签。
+    适合在计划中添加励志格言、每日英语学习、英文写作素材。
+
+    Args:
+        category: 可选，按标签过滤，如: happiness, love, wisdom, technology, life
+    """
+    try:
+        url = "https://api.quotable.io/random"
+        params = {}
+        if category:
+            params["tags"] = category
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "content": data.get("content", ""),  # 英文原文
+                "author": data.get("author", ""),
+                "tags": data.get("tags", []),
+                "length": data.get("length", 0),
+                "id": data.get("_id", "")
+            }
+        return {"error": "获取名言失败"}
+    except Exception as e:
+        return {"error": f"获取名言失败: {str(e)}"}
+
+
+def get_agify_prediction(name: str) -> Dict[str, Any]:
+    """根据名字预测年龄（免费，无需 Key）- Agify
+
+    通过名字预测一个人的年龄，基于大数据统计。
+    趣味工具，可用于互动、社交破冰、姓名分析。
+
+    Args:
+        name: 英文名字（如 michael, emily, john）
+    """
+    try:
+        url = "https://api.agify.io"
+        params = {"name": name}
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("age"):
+                return {
+                    "name": data.get("name", name),
+                    "age": data.get("age", 0),  # 预测年龄
+                    "count": data.get("count", 0),  # 样本数量
+                    "country_id": data.get("country_id", "")
+                }
+            return {"error": f"无法预测名字 '{name}' 的年龄"}
+        return {"error": "获取年龄预测失败"}
+    except Exception as e:
+        return {"error": f"获取年龄预测失败: {str(e)}"}
+
+
+def calculate_bmi(weight: str, height: str) -> Dict[str, Any]:
+    """计算BMI（身体质量指数）
+
+    自动识别单位：体重支持kg/斤/公斤，身高支持cm/米/m。
+    BMI = 体重(kg) / 身高(m)²
+
+    适用场景：减肥计划、健康评估、运动计划制定。
+
+    Args:
+        weight: 体重，如"65kg"、"130斤"、"70公斤"、"65"
+        height: 身高，如"175cm"、"1.75米"、"175"
+    """
+    try:
+        import re
+
+        # 解析体重
+        weight = str(weight).strip().lower()
+        weight_kg = 0.0
+
+        # 匹配数字和单位
+        w_match = re.match(r'([\d.]+)\s*(kg|公斤|斤|g|磅|lb)?', weight)
+        if w_match:
+            w_val = float(w_match.group(1))
+            w_unit = w_match.group(2) or "kg"
+            if w_unit in ["斤"]:
+                weight_kg = w_val / 2  # 斤转公斤
+            elif w_unit in ["g"]:
+                weight_kg = w_val / 1000  # 克转公斤
+            elif w_unit in ["磅", "lb", "lbs"]:
+                weight_kg = w_val * 0.4536  # 磅转公斤
+            else:  # kg, 公斤, 或无单位（默认kg）
+                weight_kg = w_val
+
+        # 解析身高
+        height = str(height).strip().lower()
+        height_m = 0.0
+
+        h_match = re.match(r'([\d.]+)\s*(cm|米|m|毫米|mm)?', height)
+        if h_match:
+            h_val = float(h_match.group(1))
+            h_unit = h_match.group(2) or "cm"
+            if h_unit in ["米", "m"]:
+                height_m = h_val  # 已经是米
+            elif h_unit in ["毫米", "mm"]:
+                height_m = h_val / 1000
+            else:  # cm 或无单位（默认cm）
+                # 如果数值 < 3，可能是米，比如 1.75
+                if h_val < 3:
+                    height_m = h_val
+                else:
+                    height_m = h_val / 100
+
+        if weight_kg <= 0 or height_m <= 0:
+            return {"error": "无法解析体重或身高，请确保输入正确"}
+
+        bmi = weight_kg / (height_m * height_m)
+
+        # 中国标准
+        if bmi < 18.5:
+            status = "偏瘦"
+            suggestion = "建议增加营养摄入，适当力量训练增肌"
+        elif bmi < 24:
+            status = "正常"
+            suggestion = "体重正常，保持健康饮食和规律运动即可"
+        elif bmi < 28:
+            status = "超重"
+            suggestion = "建议控制饮食热量，增加有氧运动，避免剧烈运动伤膝盖"
+        else:
+            status = "肥胖"
+            suggestion = "建议低冲击运动（游泳/快走），严格控制热量，必要时咨询医生"
+
+        return {
+            "bmi": round(bmi, 1),
+            "weight_kg": round(weight_kg, 1),
+            "height_m": round(height_m, 2),
+            "status": status,
+            "suggestion": suggestion,
+            "standard": "中国成人BMI标准"
+        }
+    except Exception as e:
+        return {"error": f"计算BMI失败: {str(e)}"}
+
+
 # ─── 导出所有 API 函数 ─────────────────────────────────────────
 
 __all__ = [
@@ -770,6 +1002,8 @@ __all__ = [
     # 新增学习计划 API
     "get_jinrishici",
     "get_hitokoto",
+    "get_wikipedia_summary",  # 新增：百科知识
+    "get_quotable_quote",  # 新增：英文名言
     # 健康计划
     "get_weather_forecast",
     "get_food_nutrition",
@@ -794,5 +1028,9 @@ __all__ = [
     "get_economic_data",
     "get_sec_edgar",
     "get_portfolio_optimizer",
-    "get_ibanforge"
+    "get_ibanforge",
+    # 通用与趣味工具（新增）
+    "get_bored_activity",  # 休闲活动推荐
+    "get_agify_prediction",  # 年龄预测
+    "calculate_bmi",  # BMI计算
 ]

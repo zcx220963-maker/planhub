@@ -28,10 +28,10 @@ async def plan_confirmation_node(state) -> dict:
             print(f"[DEBUG] plan_confirmation: user confirmed, plan_text length={len(plan_text)}")
             return {
                 "user_confirmed_create": True,
-                "plan_text_cache": plan_text,  # 保持缓存
-                "plan_type": state.get("plan_type"),  # 保持计划类型
+                "plan_text_cache": plan_text,
+                "plan_type": state.get("plan_type"),
+                "plan_info": state.get("plan_info", {}),
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_confirmation",
                         "user_response": "confirmed",
@@ -46,7 +46,6 @@ async def plan_confirmation_node(state) -> dict:
                 "final_response": plan_text,
                 "agent_output": plan_text,
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_confirmation",
                         "user_response": "rejected",
@@ -67,7 +66,6 @@ async def plan_confirmation_node(state) -> dict:
                     "waiting_for_plan_confirmation": False,  # 清除等待确认状态
                     "plan_text_cache": None,  # 清除缓存
                     "execution_trace": [
-                        *state.get("execution_trace", []),
                         {
                             "node": "plan_confirmation",
                             "user_response": "cancelled",
@@ -82,9 +80,9 @@ async def plan_confirmation_node(state) -> dict:
 我已经为您生成了计划，是否要将此计划创建到 PlanHub 平台？
 
 创建到平台后，您可以：
-- 📋 在平台上查看和管理计划
-- ✅ 进行每日打卡
-- 📊 追踪进度
+-  在平台上查看和管理计划
+-  进行每日打卡
+-  追踪进度
 
 请回复「是」或「确认」来创建，或回复「否」跳过。
 """
@@ -92,7 +90,6 @@ async def plan_confirmation_node(state) -> dict:
                 "agent_output": confirmation_question,
                 "waiting_for_plan_confirmation": True,
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_confirmation",
                         "user_response": "unclear",
@@ -100,7 +97,7 @@ async def plan_confirmation_node(state) -> dict:
                     }
                 ]
             }
-    
+
     # 首次询问（还没有问过用户）
     else:
         # 检查是否有有效的计划文本
@@ -109,7 +106,6 @@ async def plan_confirmation_node(state) -> dict:
             return {
                 "final_response": plan_text or "计划生成失败，请重试。",
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_confirmation",
                         "no_plan_text": True
@@ -118,36 +114,38 @@ async def plan_confirmation_node(state) -> dict:
             }
         
         # 构建确认询问
-        # 显示计划摘要（前200字符）
-        plan_preview = plan_text[:200] if len(plan_text) > 200 else plan_text
-        
+        # 展示计划摘要，太长时截断
+        display_plan = plan_text[:1000] if len(plan_text) > 1000 else plan_text
+        if len(plan_text) > 1000:
+            display_plan += "\n\n...(计划过长已截断，完整计划将保存到平台)"
         confirmation_question = f"""
-✅ 计划已生成！
+ 计划已生成！
 
-{plan_preview}...
+{display_plan}
 
 ---
 
 是否要将此计划创建到 PlanHub 平台？
 
 创建到平台后，您可以：
-- 📋 在平台上查看和管理计划
-- ✅ 进行每日打卡
-- 📊 追踪进度
+-  在平台上查看和管理计划
+-  进行每日打卡
+-  追踪进度
 
 请回复「是」或「确认」来创建，或回复「否」跳过。
 """
         
         return {
             "agent_output": confirmation_question,
-            "waiting_for_plan_confirmation": True,  # 设置等待确认标志
-            "plan_text_cache": plan_text,           # 保持缓存
+            "waiting_for_plan_confirmation": True,
+            "plan_text_cache": plan_text,
+            "plan_type": state.get("plan_type"),
+            "plan_info": state.get("plan_info", {}),
             "execution_trace": [
-                *state.get("execution_trace", []),
                 {
                     "node": "plan_confirmation",
                     "action": "asked_user",
-                    "plan_preview_length": len(plan_preview),
+                    "plan_text_length": len(plan_text),
                     "success": True
                 }
             ]

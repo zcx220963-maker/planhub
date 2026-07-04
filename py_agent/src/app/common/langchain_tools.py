@@ -19,6 +19,55 @@ from app.common.llm_factory import call_planhub_api
 from app.common.tool_validator import validate_tool_params
 
 
+# ─── 工具调用防重复机制 ──────────────────────────────────────────
+# 记录单次 agent 运行中各工具的调用次数，防止小模型重复调用
+_tool_call_counts: dict[str, int] = {}
+
+# 一次性工具：单次运行最多调用1次
+_ONE_TIME_TOOLS = {"create_post", "check_in_plan", "create_plan", "get_unchecked_plans"}
+
+# 同参数不重复调用的工具（多轮对话中可以换关键词搜，但同一次回答里不能重复搜同一个关键词）
+_SAME_PARAM_DEDUP_TOOLS = {"search_plans"}
+
+_tool_call_params = {}  # tool_name -> set of param_strings
+
+
+def reset_tool_call_counts():
+    """每次 agent 运行开始前重置计数"""
+    global _tool_call_counts, _tool_call_params
+    _tool_call_counts = {}
+    _tool_call_params = {}
+
+
+def check_tool_can_call(tool_name: str, params_str: str = "") -> tuple[bool, str]:
+    """
+    检查工具是否还可以调用。
+    返回: (是否允许调用, 原因)
+    """
+    global _tool_call_counts
+    count = _tool_call_counts.get(tool_name, 0)
+
+    if tool_name in _ONE_TIME_TOOLS and count >= 1:
+        return False, f"工具 {tool_name} 本次已调用过，请勿重复调用。请直接回复用户结果。"
+
+    if tool_name in _SAME_PARAM_DEDUP_TOOLS and params_str:
+        called_params = _tool_call_params.get(tool_name, set())
+        if params_str in called_params:
+            return False, f"工具 {tool_name} 已查询过「{params_str}」，无需重复调用。请直接回复用户结果。"
+
+    return True, ""
+
+
+def record_tool_call(tool_name: str, params_str: str = ""):
+    """记录工具被调用了一次"""
+    global _tool_call_counts, _tool_call_params
+    _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
+    if tool_name in _SAME_PARAM_DEDUP_TOOLS and params_str:
+        if tool_name not in _tool_call_params:
+            _tool_call_params[tool_name] = set()
+        _tool_call_params[tool_name].add(params_str)
+
+
 def _extract_error_message(result: dict) -> str:
     """从后端返回中提取错误信息"""
     message = result.get('message', '未知错误')
@@ -78,7 +127,7 @@ class GetActivityInput(BaseModel):
 
 
 class CheckInInput(BaseModel):
-    plan_id: str = Field(description="要打卡的计划ID，数字，例如：1")
+    plan_id: str = Field(description="用户选择的序号（不是真实ID），例如用户说'1'就传'1'，说'第二个'就传'2'")
 
 
 class GetUncheckedPlansInput(BaseModel):
@@ -123,6 +172,12 @@ def create_plan(
     - 从用户输入中提取"1个月"、"30天"等信息
     - 从计划文本中识别"每天学习4小时"等信息
     """
+    # 防重复调用
+    can_call, reason = check_tool_can_call("create_plan")
+    if not can_call:
+        return reason
+    record_tool_call("create_plan")
+
     # 参数验证
     is_valid, errors, warnings = validate_tool_params("create_plan", {"title": title})
     if not is_valid:
@@ -185,8 +240,24 @@ def create_post(content: str, hashtags: str = "") -> str:
     在 PlanHub 发布一条新帖子/动态。
 
     当用户说"帮我发帖"、"发条动态"、"分享"时使用此工具。
-    如果用户没有提供内容，必须先询问用户要发什么。
+
+    参数说明：
+    - content: 帖子的正文内容。用户说"内容：xxx"中的xxx就是content。
+    - hashtags: 帖子的标签/话题。用户说"标题：xxx"中的xxx作为hashtags传入。
+
+    示例：
+    - 用户说"发帖，内容：今天完成了健身" → content="今天完成了健身", hashtags=""
+    - 用户说"发帖，内容：今天完成了健身,标题:健身" → content="今天完成了健身", hashtags="健身"
+    - 用户说"发帖，内容：今天学习了Python,标题:学习心得" → content="今天学习了Python", hashtags="学习心得"
+
+    注意：content 只包含"内容："后面的部分，不要包含"标题:"及其后面的内容。
     """
+    # 防重复调用
+    can_call, reason = check_tool_can_call("create_post")
+    if not can_call:
+        return reason
+    record_tool_call("create_post")
+
     # 参数验证
     params = {"content": content}
     if hashtags:
@@ -249,6 +320,12 @@ def search_plans(keyword: str) -> str:
     is_valid, errors, warnings = validate_tool_params("search_plans", {"keyword": keyword})
     if not is_valid:
         return f"参数验证失败：{'；'.join(errors)}。请修正后重试。"
+
+    # 防重复调用：同参数不重复搜索
+    can_call, reason = check_tool_can_call("search_plans", params_str=keyword)
+    if not can_call:
+        return reason
+    record_tool_call("search_plans", params_str=keyword)
 
     global _last_search_results
     _last_search_results = {"plans": [], "posts": []}  # 重置
@@ -343,7 +420,7 @@ def get_item_detail(item_type: str, display_id: int) -> str:
         items = _last_search_results.get("posts", [])
         item_name = "帖子"
     else:
-        return f"❌ 无效的项目类型：{item_type}，必须是 plan 或 post"
+        return f" 无效的项目类型：{item_type}，必须是 plan 或 post"
 
     # 查找对应 display_id 的项目
     target_item = None
@@ -360,9 +437,9 @@ def get_item_detail(item_type: str, display_id: int) -> str:
             available = [item.get("display_id") for item in _last_search_results.get("posts", [])]
 
         if available:
-            return f"❌ 未找到序号为 {display_id} 的{item_name}，当前可用的序号是：{available}"
+            return f" 未找到序号为 {display_id} 的{item_name}，当前可用的序号是：{available}"
         else:
-            return f"❌ 没有可用的{item_name}，请先进行搜索"
+            return f" 没有可用的{item_name}，请先进行搜索"
 
     real_id = target_item.get("real_id")
     title = target_item.get("title") or target_item.get("content", "")
@@ -438,14 +515,10 @@ def get_user_activity(user_id: str) -> str:
     return "活动记录：\n" + "\n".join(lines)
 
 
-@tool(args_schema=GetUncheckedPlansInput)
-def get_unchecked_plans() -> str:
+def _get_unchecked_plans_internal() -> str:
     """
-    获取用户今天还未打卡的所有计划列表。
-
-    当用户说"打卡"、"签到"、"我要打卡"时，必须先调用此工具获取未打卡计划列表。
+    获取用户今天还未打卡的所有计划列表（内部实现，供其他函数调用）。
     """
-    # 检查是否有有效的 token（获取计划列表需要认证）
     from app.common.llm_factory import get_request_token, _jwt_token
     token = get_request_token() or _jwt_token
 
@@ -454,24 +527,19 @@ def get_unchecked_plans() -> str:
 
     result = call_planhub_api("/plans", "GET", {}, token=token)
 
-    # DEBUG: 打印后端返回的原始数据
     print(f"[DEBUG] get_unchecked_plans: 后端返回原始数据 = {result}", flush=True)
 
-    # 检查后端返回是否成功
     success, error_msg = _check_backend_success(result)
     if not success:
         return f"获取计划列表失败：{error_msg}"
 
-    # 注意：后端返回格式可能是 {success: true, data: [...]} 或 {success: true, data: {records: [...]}}
     inner_data = result.get("data", {})
 
-    # DEBUG: 打印解析前的数据
     print(f"[DEBUG] get_unchecked_plans: inner_data 类型 = {type(inner_data)}, 内容 = {inner_data}", flush=True)
 
     if isinstance(inner_data, dict) and "records" in inner_data:
         plans = inner_data.get("records", [])
     elif isinstance(inner_data, dict) and "data" in inner_data:
-        # 处理 {data: {data: [...]}} 的情况
         plans = inner_data.get("data", [])
         if isinstance(plans, dict) and "records" in plans:
             plans = plans.get("records", [])
@@ -480,14 +548,12 @@ def get_unchecked_plans() -> str:
     else:
         plans = []
 
-    # DEBUG: 打印获取到的计划列表
     print(f"[DEBUG] get_unchecked_plans: 获取到 {len(plans)} 个计划", flush=True)
     for plan in plans:
         print(f"[DEBUG]   - 计划: id={plan.get('id')}, title={plan.get('title')}", flush=True)
 
     unchecked_plans = []
 
-    # 批量检查打卡状态（带错误处理）
     for plan in plans:
         plan_id = plan.get("id")
         if not plan_id:
@@ -503,23 +569,19 @@ def get_unchecked_plans() -> str:
                     if not exists:
                         unchecked_plans.append(plan)
                 else:
-                    # 打卡检查失败，假设未打卡（让用户自己选择）
                     print(f"[WARN] 计划 {plan_id} 打卡检查失败，假设未打卡", flush=True)
                     unchecked_plans.append(plan)
             else:
-                # API 调用失败，假设未打卡
                 print(f"[WARN] 计划 {plan_id} API 调用失败，假设未打卡", flush=True)
                 unchecked_plans.append(plan)
 
         except Exception as e:
-            # 异常情况，假设未打卡
             print(f"[ERROR] 计划 {plan_id} 打卡检查异常: {e}，假设未打卡", flush=True)
             unchecked_plans.append(plan)
 
     if not unchecked_plans:
         return "您今天的计划都已经打卡完成了！"
 
-    # 保存到全局变量，方便后续打卡时获取真实ID
     global _last_unchecked_plans
     _last_unchecked_plans = []
 
@@ -527,24 +589,36 @@ def get_unchecked_plans() -> str:
     for i, plan in enumerate(unchecked_plans, 1):
         plan_id = plan.get("id")
         title = plan.get("title", "无标题")
-        plan_list.append(f"{i}. {title} (ID: {plan_id})")
+        plan_list.append(f"{i}. {title}")
         _last_unchecked_plans.append({
             "display_id": i,
             "real_id": plan_id,
             "title": title
         })
 
-    return "以下是您今天还未打卡的计划：\n" + "\n".join(plan_list) + "\n\n请告诉我要打卡第几个（或直接说计划ID）？"
+    return "以下是您今天还未打卡的计划：\n" + "\n".join(plan_list) + "\n\n请告诉我要打卡第几个？"
+
+
+@tool(args_schema=GetUncheckedPlansInput)
+def get_unchecked_plans() -> str:
+    """
+    获取用户今天还未打卡的所有计划列表。
+
+    当用户说"打卡"、"签到"、"我要打卡"时，必须先调用此工具获取未打卡计划列表。
+    """
+    return _get_unchecked_plans_internal()
 
 
 def _resolve_plan_id(plan_id_or_index: str) -> str:
     """
-    解析用户提供的计划ID或序号，返回真实计划ID
+    解析用户提供的序号，返回真实计划ID
 
     支持格式：
-    - 数字ID： "1", "123"
+    - 数字序号： "1", "2", "3"
     - 中文序号： "第一个", "第二个", "第三个"
-    - 数字序号： "第1个", "第2个"
+    - 纯中文数字： "一", "二", "三"
+
+    重要：只认序号，不认原始ID，避免序号和ID冲突
     """
     import re
 
@@ -561,39 +635,41 @@ def _resolve_plan_id(plan_id_or_index: str) -> str:
     # 使用全局变量
     global _last_unchecked_plans
 
+    # 如果没有缓存的计划列表，无法解析序号
+    if not _last_unchecked_plans:
+        raise ValueError("NO_PLAN_LIST")
+
     # 尝试匹配中文序号： "第一个", "第二个"
     for cn_num, index in chinese_numbers.items():
         if plan_id_or_index == f"第{cn_num}个" or plan_id_or_index == f"第{cn_num}":
-            # 从全局变量中获取对应的真实ID
-            if _last_unchecked_plans and 1 <= index <= len(_last_unchecked_plans):
+            if 1 <= index <= len(_last_unchecked_plans):
                 return str(_last_unchecked_plans[index - 1]["real_id"])
-            return plan_id_or_index
+            raise ValueError(f"序号超出范围（1-{len(_last_unchecked_plans)}）")
 
     # 尝试匹配纯中文数字： "一", "二", "三"
     if plan_id_or_index in chinese_numbers:
         index = chinese_numbers[plan_id_or_index]
-        if _last_unchecked_plans and 1 <= index <= len(_last_unchecked_plans):
+        if 1 <= index <= len(_last_unchecked_plans):
             return str(_last_unchecked_plans[index - 1]["real_id"])
+        raise ValueError(f"序号超出范围（1-{len(_last_unchecked_plans)}）")
 
     # 尝试匹配 "第N个" 格式（N是阿拉伯数字）
     match = re.match(r'^第(\d+)个?$', plan_id_or_index)
     if match:
         index = int(match.group(1))
-        if _last_unchecked_plans and 1 <= index <= len(_last_unchecked_plans):
+        if 1 <= index <= len(_last_unchecked_plans):
             return str(_last_unchecked_plans[index - 1]["real_id"])
-        return plan_id_or_index
+        raise ValueError(f"序号超出范围（1-{len(_last_unchecked_plans)}）")
 
-    # 尝试匹配阿拉伯数字： "1", "2", "123"
+    # 尝试匹配阿拉伯数字： "1", "2", "3" —— 只作为序号
     if plan_id_or_index.isdigit():
         index = int(plan_id_or_index)
-        # 先尝试作为序号（从1开始）
-        if _last_unchecked_plans and 1 <= index <= len(_last_unchecked_plans):
+        if 1 <= index <= len(_last_unchecked_plans):
             return str(_last_unchecked_plans[index - 1]["real_id"])
-        # 如果超出范围，可能直接是计划ID
-        return plan_id_or_index
+        raise ValueError(f"序号超出范围（1-{len(_last_unchecked_plans)}）")
 
-    # 无法解析，返回原值
-    return plan_id_or_index
+    # 无法解析
+    raise ValueError(f"无法识别输入：{plan_id_or_index}，请输入序号（1-{len(_last_unchecked_plans)}）")
 
 
 @tool(args_schema=CheckInInput)
@@ -603,30 +679,36 @@ def check_in_plan(plan_id: str) -> str:
 
     当用户说"打卡"、"签到"、"我完成了"时使用此工具。
     【重要】在调用此工具前，必须先调用 get_unchecked_plans 获取未打卡计划列表！
-    如果用户没有提供 plan_id，必须先询问用户选择第几个计划，或者直接提供计划ID。
 
-    支持用户输入：
-    - 计划ID： "1", "123"
-    - 中文序号： "第一个", "第二个"
-    - 数字序号： "第1个", "第2个"
-
-    【自动流程】如果 _last_unchecked_plans 为空（说明还没有获取过未打卡列表），
-    则自动调用 get_unchecked_plans 获取列表并返回，让用户选择。
+    plan_id 参数说明：
+    - 传用户说的序号，不是真实ID
+    - 用户说"1" → plan_id="1"
+    - 用户说"2" → plan_id="2"
+    - 用户说"第二个" → plan_id="2"
+    - 工具内部会自动把序号转成真实ID
     """
+    # 防重复调用
+    can_call, reason = check_tool_can_call("check_in_plan")
+    if not can_call:
+        return reason
+    record_tool_call("check_in_plan")
+
     # 检查是否已经获取过未打卡计划列表
     global _last_unchecked_plans
     if not _last_unchecked_plans:
         # 还没有获取过列表，自动调用 get_unchecked_plans
         print(f"[DEBUG] check_in_plan: _last_unchecked_plans 为空，自动调用 get_unchecked_plans", flush=True)
-        return get_unchecked_plans()
+        return _get_unchecked_plans_internal()
 
-    # 解析用户输入（可能是中文序号或数字）
+    # 解析用户输入（序号 → 真实ID）
     original_input = plan_id
-    plan_id = _resolve_plan_id(plan_id)
-
-    # 如果解析失败，提示用户
-    if plan_id == original_input and not plan_id.isdigit():
-        return f"无法识别「{original_input}」，请输入计划序号（如：1、2）或中文序号（如：第一个、第二个）"
+    try:
+        plan_id = _resolve_plan_id(plan_id)
+    except ValueError as e:
+        error_msg = str(e)
+        if error_msg == "NO_PLAN_LIST":
+            return _get_unchecked_plans_internal()
+        return f"无法识别「{original_input}」，请输入序号（1-{len(_last_unchecked_plans)}）"
 
     # 参数验证
     is_valid, errors, warnings = validate_tool_params("check_in_plan", {"plan_id": plan_id})
@@ -655,18 +737,25 @@ def check_in_plan(plan_id: str) -> str:
 
     # 检查后端返回是否成功
     success, error_msg = _check_backend_success(result)
+    
+    # 特殊处理：如果返回"已打卡"，视为成功（用户已经完成了打卡目标）
     if not success:
-        return f"打卡失败：{error_msg}"
+        if "已打卡" in error_msg or "already" in error_msg.lower():
+            print(f"[DEBUG] check_in_plan: 用户今日已打卡，视为成功", flush=True)
+        else:
+            return f"打卡失败：{error_msg}"
 
-    # 打卡成功，返回带跳转链接的消息（格式与搜索结果一致）
-    # 前端正则匹配 [text](/plan/id) 格式
+    # 打卡成功，清空未打卡计划列表缓存，避免重复打卡时使用过期数据
+    _last_unchecked_plans = []
+    
+    # 打卡成功，返回带跳转链接的消息
     inner_data = result.get("data", {})
     checkin_data = inner_data.get("data", {}) if isinstance(inner_data, dict) else {}
     plan_title = checkin_data.get("title", "计划")
 
     # 优先从全局变量获取真实标题
     for p in _last_unchecked_plans:
-        if str(p.get("real_id")) == str(plan_id) or str(p.get("display_id")) == str(plan_id):
+        if str(p.get("real_id")) == str(plan_id):
             plan_title = p.get("title", plan_title)
             break
 

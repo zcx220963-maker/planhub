@@ -17,13 +17,13 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-import redis.asyncio as redis
+import redis
 
 logger = logging.getLogger(__name__)
 
 
 class MemoryService:
-    """简化版记忆系统服务"""
+    """简化版记忆系统服务（同步版本，兼容现有 Redis 客户端）"""
 
     def __init__(self, redis_client: redis.Redis):
         self.redis = redis_client
@@ -32,7 +32,7 @@ class MemoryService:
     # ─── 短期记忆（对话历史）────────────────────────────────
     # 注意：这是唯一会每次都传给 LLM 的记忆
 
-    async def save_short_term(self, session_id: str, message: Dict[str, Any]) -> None:
+    def save_short_term(self, session_id: str, message: Dict[str, Any]) -> None:
         """保存对话历史"""
         try:
             key = f"memory:short:{session_id}"
@@ -42,15 +42,15 @@ class MemoryService:
             pipe.lpush(key, message_json)
             pipe.ltrim(key, 0, 19)  # 只保留最近 10 轮（20 条消息）
             pipe.expire(key, self.short_term_ttl)
-            await pipe.execute()
+            pipe.execute()
         except Exception as e:
             logger.error(f"保存对话历史失败: {e}")
 
-    async def get_short_term(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_short_term(self, session_id: str) -> List[Dict[str, Any]]:
         """获取对话历史"""
         try:
             key = f"memory:short:{session_id}"
-            messages = await self.redis.lrange(key, 0, -1)
+            messages = self.redis.lrange(key, 0, -1)
 
             if not messages:
                 return []
@@ -65,7 +65,7 @@ class MemoryService:
     # ─── 用户偏好（摘要，极简）────────────────────────────────
     # 每次只传 1-2 句话摘要，减少 Token 消耗
 
-    async def save_user_preference(self, user_id: str, preference_summary: str) -> None:
+    def save_user_preference(self, user_id: str, preference_summary: str) -> None:
         """保存用户偏好摘要（只存 1-2 句话）
 
         Args:
@@ -74,11 +74,11 @@ class MemoryService:
         """
         try:
             key = f"memory:pref:{user_id}"
-            await self.redis.set(key, preference_summary)
+            self.redis.set(key, preference_summary)
         except Exception as e:
             logger.error(f"保存用户偏好失败: {e}")
 
-    async def get_user_preference(self, user_id: str) -> str:
+    def get_user_preference(self, user_id: str) -> str:
         """获取用户偏好摘要
 
         Returns:
@@ -86,13 +86,13 @@ class MemoryService:
         """
         try:
             key = f"memory:pref:{user_id}"
-            data = await self.redis.get(key)
-            return data.decode() if data else ""
+            data = self.redis.get(key)
+            return data if data else ""
         except Exception as e:
             logger.error(f"获取用户偏好失败: {e}")
             return ""
 
-    async def update_user_preference(self, user_id: str, chat_history: List[Dict]) -> None:
+    def update_user_preference(self, user_id: str, chat_history: List[Dict]) -> None:
         """从对话历史中提取用户偏好并保存（极简版）
 
         只提取关键偏好，生成 1-2 句话摘要
@@ -124,24 +124,24 @@ class MemoryService:
 
         if preferences:
             summary = "，".join(preferences[:3])  # 最多 3 条
-            await self.save_user_preference(user_id, summary)
+            self.save_user_preference(user_id, summary)
 
     # ─── 工作记忆（按需使用）─────────────────────────────────
     # 不预加载到上下文，只有需要时才查询
 
-    async def save_working(self, session_id: str, task_info: Dict[str, Any]) -> None:
+    def save_working(self, session_id: str, task_info: Dict[str, Any]) -> None:
         """保存当前任务状态（临时）"""
         try:
             key = f"memory:working:{session_id}"
-            await self.redis.setex(key, 3600, json.dumps(task_info, ensure_ascii=False))
+            self.redis.setex(key, 3600, json.dumps(task_info, ensure_ascii=False))
         except Exception as e:
             logger.error(f"保存工作记忆失败: {e}")
 
-    async def get_working(self, session_id: str) -> Dict[str, Any]:
+    def get_working(self, session_id: str) -> Dict[str, Any]:
         """获取当前任务状态（按需调用）"""
         try:
             key = f"memory:working:{session_id}"
-            data = await self.redis.get(key)
+            data = self.redis.get(key)
             return json.loads(data) if data else {}
         except Exception as e:
             logger.error(f"获取工作记忆失败: {e}")
@@ -150,7 +150,7 @@ class MemoryService:
     # ─── 构建上下文（核心方法）───────────────────────────────
     # 这是唯一会传给 LLM 的方法，必须控制 Token 消耗
 
-    async def build_context_summary(self, session_id: str, user_id: str = None) -> str:
+    def build_context_summary(self, session_id: str, user_id: str = None) -> str:
         """构建极简上下文摘要（传给 LLM）
 
         只包含：
@@ -168,7 +168,7 @@ class MemoryService:
 
         # 只添加用户偏好（1-2 句话）
         if user_id:
-            preference = await self.get_user_preference(user_id)
+            preference = self.get_user_preference(user_id)
             if preference:
                 parts.append(f"用户偏好：{preference}")
 
@@ -176,12 +176,12 @@ class MemoryService:
 
     # ─── 清理方法 ───────────────────────────────────────────
 
-    async def clear_session(self, session_id: str) -> None:
+    def clear_session(self, session_id: str) -> None:
         """清理会话的所有记忆"""
         try:
             pipe = self.redis.pipeline()
             pipe.delete(f"memory:short:{session_id}")
             pipe.delete(f"memory:working:{session_id}")
-            await pipe.execute()
+            pipe.execute()
         except Exception as e:
             logger.error(f"清理会话记忆失败: {e}")

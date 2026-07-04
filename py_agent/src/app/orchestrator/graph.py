@@ -3,24 +3,31 @@ LangGraph图结构定义
 负责创建和配置Agent编排图
 
 图结构：
-memory_load → supervisor → [plan_generator | assistant | rag | chat]
+memory_load → supervisor → [plan_generator | plan_builder | assistant | rag | chat]
                                     ↓
-                          plan_generator → plan_confirmation
-                                    ↓                    ↓
-                              用户确认              用户拒绝
-                                    ↓                    ↓
-                          extract_plan_title      memory_save
-                                    ↓
-                          create_plan_to_platform
-                                    ↓
-                          memory_save → END
+                          plan_generator → parameter_extractor (确认后)
+                                                 ↓ ╱══════════╲
+                                          tool_executor  doc_retriever
+                                                 ↓ ╲══════════╱
+                                       plan_writer（等两者都完成）
+                                              ↓
+                          plan_writer → plan_confirmation
+                                              ↓                    ↓
+                                        用户确认              用户拒绝
+                                              ↓                    ↓
+                                    extract_plan_title      memory_save
+                                              ↓
+                                    create_plan_to_platform
+                                              ↓
+                                    memory_save → END
 
 特性：
 1. 记忆加载：从Redis加载用户短期记忆和偏好
 2. 智能路由：根据意图分类路由到对应Agent
-3. 计划确认：生成计划后询问用户是否创建到平台
-4. 记忆保存：将对话记录和状态保存到Redis
-5. 能力开关：可动态控制各Agent能力
+3. 参数提取 → 工具执行 → 计划生成 三阶段分离，避免上下文污染
+4. 计划确认：生成计划后询问用户是否创建到平台
+5. 记忆保存：将对话记录和状态保存到Redis
+6. 能力开关：可动态控制各Agent能力
 """
 
 from langgraph.graph import StateGraph, END
@@ -28,6 +35,10 @@ from .state import AgentState
 from .nodes.supervisor import supervisor_node
 from .nodes.plan_mode_confirm import plan_mode_confirm_node
 from .nodes.plan_generator import plan_generator_node
+from .nodes.parameter_extractor import parameter_extractor_node
+from .nodes.tool_executor import tool_executor_node
+from .nodes.doc_retriever import doc_retriever_node
+from .nodes.plan_writer import plan_writer_node
 from .nodes.plan_confirmation import plan_confirmation_node
 from .nodes.extract_plan_title import extract_plan_title_node
 from .nodes.create_plan_to_platform import create_plan_to_platform_node
@@ -51,7 +62,6 @@ async def memory_load_node(state) -> dict:
             "user_preference": memory_data.get("user_preference"),
             "working_memory": memory_data.get("working_memory"),
             "execution_trace": [
-                *state.get("execution_trace", []),
                 {
                     "node": "memory_load",
                     "session_id": session_id,
@@ -67,7 +77,6 @@ async def memory_load_node(state) -> dict:
             "user_preference": None,
             "working_memory": None,
             "execution_trace": [
-                *state.get("execution_trace", []),
                 {
                     "node": "memory_load",
                     "error": str(e),
@@ -78,19 +87,33 @@ async def memory_load_node(state) -> dict:
         }
 
 
+async def _clear_checkpoint(session_id: str):
+    """清除 LangGraph checkpoint，释放计划流程状态"""
+    import asyncio
+    try:
+        from app.api.orchestrator import _checkpointer, get_thread_id
+        if _checkpointer and hasattr(_checkpointer, 'redis'):
+            thread_id = get_thread_id(session_id)
+            key = f"ckpt:{thread_id}"
+            await _checkpointer.redis.delete(key)
+            print(f"[DEBUG] memory_save: 已清除 checkpoint key={key}")
+    except Exception as e:
+        print(f"[WARN] memory_save: 清除 checkpoint 失败: {e}")
+
+
 async def memory_save_node(state) -> dict:
-    """记忆保存节点：将对话记录和状态保存到Redis"""
+    """记忆保存节点：将对话记录和状态保存到Redis，完成后清除 checkpoint 释放状态"""
     memory_bridge = MemoryBridge()
     session_id = state.get("session_id", "default")
     user_id = state.get("user_id") or "anonymous"
-    
+
     # 构建聊天历史
     chat_history = []
     if state.get("user_input"):
         chat_history.append({"role": "user", "content": state["user_input"]})
     if state.get("agent_output"):
         chat_history.append({"role": "assistant", "content": state["agent_output"]})
-    
+
     try:
         # 保存短期记忆
         await memory_bridge.save_memory(
@@ -100,34 +123,34 @@ async def memory_save_node(state) -> dict:
             user_preference=state.get("user_preference"),
             working_memory=state.get("working_memory")
         )
-        
+
         # 保存会话到 Redis（用于前端会话列表显示）
-        # 尝试从 Redis 获取现有会话历史，追加新消息
         existing_conv = memory_bridge.get_conversation(session_id)
         if existing_conv and existing_conv.get("history"):
-            # 追加新消息到现有历史
             full_history = existing_conv["history"] + chat_history
         else:
             full_history = chat_history
-        
-        # 保存会话（module 为 orchestrator）
+
         memory_bridge.save_conversation(
             session_id=session_id,
             user_id=user_id,
             module="orchestrator",
             history=full_history
         )
-        
+
+        # 流程结束，立即清除 checkpoint（不等 TTL）
+        await _clear_checkpoint(session_id)
+
         return {
             "final_response": state.get("agent_output", "处理完成"),
             "execution_trace": [
-                *state.get("execution_trace", []),
                 {
                     "node": "memory_save",
                     "session_id": session_id,
                     "user_id": user_id,
                     "chat_history_count": len(chat_history),
                     "total_history_count": len(full_history),
+                    "checkpoint_cleared": True,
                     "success": True
                 }
             ]
@@ -136,7 +159,6 @@ async def memory_save_node(state) -> dict:
         return {
             "final_response": state.get("agent_output", "处理完成"),
             "execution_trace": [
-                *state.get("execution_trace", []),
                 {
                     "node": "memory_save",
                     "error": str(e),
@@ -145,6 +167,24 @@ async def memory_save_node(state) -> dict:
                 }
             ]
         }
+
+
+def route_after_rag(state) -> str:
+    """
+    RAG 完成后的路由
+
+    路由逻辑：
+    1. 如果 RAG 查询成功（rag_fallback_to_chat=False）→ memory_save
+    2. 如果 RAG 查询失败（rag_fallback_to_chat=True）→ chat（fallback）
+    """
+    fallback = state.get("rag_fallback_to_chat", False)
+    
+    if fallback:
+        print(f"[DEBUG] route_after_rag: RAG fallback to chat")
+        return "chat"
+    
+    print(f"[DEBUG] route_after_rag: RAG success, routing to memory_save")
+    return "memory_save"
 
 
 def route_by_intent(state) -> str:
@@ -193,6 +233,10 @@ def route_by_intent(state) -> str:
     if selected in ["assistant", "rag", "chat", "clarify"]:
         return selected
 
+    # plan_builder 直接路由到 parameter_extractor
+    if selected == "plan_builder":
+        return "parameter_extractor"
+
     # 默认降级到chat
     return "chat"
 
@@ -219,6 +263,11 @@ def route_after_plan_generator(state) -> str:
             break
     
     if last_pg_trace:
+        # 需要计划构建，路由到 parameter_extractor
+        if last_pg_trace.get("needs_plan_building"):
+            print(f"[DEBUG] route_after_plan_generator: needs_plan_building=True, routing to parameter_extractor")
+            return "parameter_extractor"
+
         # 计划已生成，询问用户是否创建到平台
         if last_pg_trace.get("plan_generated"):
             print(f"[DEBUG] route_after_plan_generator: plan_generated=True, routing to plan_confirmation")
@@ -236,6 +285,24 @@ def route_after_plan_generator(state) -> str:
     
     # 默认保存记忆
     print(f"[DEBUG] route_after_plan_generator: default routing to memory_save")
+    return "memory_save"
+
+
+def route_after_plan_writer(state) -> str:
+    """
+    plan_writer 完成后的路由
+
+    路由逻辑：
+    1. 计划生成成功（plan_generated=True）→ plan_confirmation
+    2. 生成失败（plan_generated=False）→ memory_save（回退）
+    """
+    plan_generated = state.get("plan_generated", False)
+    
+    if plan_generated:
+        print(f"[DEBUG] route_after_plan_writer: plan_generated=True, routing to plan_confirmation")
+        return "plan_confirmation"
+    
+    print(f"[DEBUG] route_after_plan_writer: plan_generated=False, routing to memory_save")
     return "memory_save"
 
 
@@ -302,6 +369,10 @@ def create_agent_graph():
     workflow.add_node("supervisor", supervisor_node)
     workflow.add_node("plan_mode_confirm", plan_mode_confirm_node)
     workflow.add_node("plan_generator", plan_generator_node)
+    workflow.add_node("parameter_extractor", parameter_extractor_node)
+    workflow.add_node("tool_executor", tool_executor_node)
+    workflow.add_node("doc_retriever", doc_retriever_node)
+    workflow.add_node("plan_writer", plan_writer_node)
     workflow.add_node("plan_confirmation", plan_confirmation_node)
     workflow.add_node("extract_plan_title", extract_plan_title_node)
     workflow.add_node("create_plan_to_platform", create_plan_to_platform_node)
@@ -323,6 +394,7 @@ def create_agent_graph():
         {
             "plan_mode_confirm": "plan_mode_confirm",
             "plan_generator": "plan_generator",
+            "parameter_extractor": "parameter_extractor",
             "plan_confirmation": "plan_confirmation",
             "assistant": "assistant",
             "rag": "rag",
@@ -342,10 +414,28 @@ def create_agent_graph():
         }
     )
 
-    # plan_generator → 条件路由（询问确认或直接保存）
+    # plan_generator → 条件路由（收集信息/确认后提取参数）
     workflow.add_conditional_edges(
         "plan_generator",
         route_after_plan_generator,
+        {
+            "parameter_extractor": "parameter_extractor",
+            "plan_confirmation": "plan_confirmation",
+            "memory_save": "memory_save",
+        }
+    )
+
+    # 四阶段分离：参数提取 → 工具执行 + 文档检索（并行）→ 计划生成
+    workflow.add_edge("parameter_extractor", "tool_executor")
+    workflow.add_edge("parameter_extractor", "doc_retriever")
+    # plan_writer 等待 tool_executor 和 doc_retriever 都完成后才执行
+    workflow.add_edge("tool_executor", "plan_writer")
+    workflow.add_edge("doc_retriever", "plan_writer")
+
+    # plan_writer → 条件路由（成功→确认，失败→保存）
+    workflow.add_conditional_edges(
+        "plan_writer",
+        route_after_plan_writer,
         {
             "plan_confirmation": "plan_confirmation",
             "memory_save": "memory_save",
@@ -370,7 +460,17 @@ def create_agent_graph():
 
     # 其他Agent执行完成后 → 保存记忆
     workflow.add_edge("assistant", "memory_save")
-    workflow.add_edge("rag", "memory_save")
+    
+    # RAG → 条件路由（成功 → memory_save，失败 → chat fallback）
+    workflow.add_conditional_edges(
+        "rag",
+        route_after_rag,
+        {
+            "memory_save": "memory_save",
+            "chat": "chat",
+        }
+    )
+    
     workflow.add_edge("chat", "memory_save")
 
     # 记忆保存完成 → END

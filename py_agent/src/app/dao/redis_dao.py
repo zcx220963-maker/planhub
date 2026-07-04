@@ -22,10 +22,10 @@ def init_redis():
     try:
         # 使用 PING 命令测试连接（兼容所有 Redis 版本）
         redis_client.ping()
-        print("✓ Redis 连接成功")
+        print(" Redis 连接成功")
         return True
     except redis.exceptions.ConnectionError as e:
-        print(f"✗ Redis 连接失败: {e}")
+        print(f" Redis 连接失败: {e}")
         print("  请检查：")
         print("  1. Redis 服务是否已启动")
         print("  2. Redis 端口是否正确（默认 6379）")
@@ -33,10 +33,10 @@ def init_redis():
         return False
     except redis.exceptions.ResponseError as e:
         # 旧版本 Redis 可能不支持某些命令
-        print(f"✗ Redis 版本兼容性问题: {e}")
+        print(f" Redis 版本兼容性问题: {e}")
         return False
     except Exception as e:
-        print(f"✗ Redis 未知错误: {e}")
+        print(f" Redis 未知错误: {e}")
         return False
 
 

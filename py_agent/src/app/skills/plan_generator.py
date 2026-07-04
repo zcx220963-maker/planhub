@@ -333,47 +333,47 @@ class PlanInfoCollector:
 
         questions = {
             # ─── 学习计划 ───────────────────────────────────────
-            "learning_topic": "你想学习什么主题？例如：Python、英语、编程、设计\n\n💡 提示：提到特定主题会调用不同的资源\n  - 编程/Python/Java → 搜索编程书籍\n  - 英语/单词 → 搜索英语学习资源\n  - 论文/学术 → 搜索学术文章",
+            "learning_topic": "你想学习什么主题？例如：Python、英语、编程、设计\n\n 提示：提到特定主题会调用不同的资源\n  - 编程/Python/Java → 搜索编程书籍\n  - 英语/单词 → 搜索英语学习资源\n  - 论文/学术 → 搜索学术文章",
             "learning_goal": "你的学习目标？例如：入门、进阶、项目实战、考试准备",
             "learning_duration": "计划学习多长时间？例如：1个月、3个月、半年",
             "learning_daily_hours": "每天能投入多少时间学习？例如：1小时、2小时、4小时",
             "learning_level": "你当前的基础水平？例如：零基础、初学者、有一定基础",
 
             # ─── 健康计划 ───────────────────────────────────────
-            "health_goal": "你的健康目标？例如：减肥、增肌、保持健康、改善睡眠\n\n💡 提示：\n  - 减肥/饮食 → 查询营养数据库\n  - 户外/跑步/运动 → 查询天气情况\n  - 增肌 → 查询蛋白质摄入建议",
+            "health_goal": "你的健康目标？例如：减肥、增肌、保持健康、改善睡眠\n\n 提示：\n  - 减肥/饮食 → 查询营养数据库\n  - 户外/跑步/运动 → 查询天气情况\n  - 增肌 → 查询蛋白质摄入建议",
             "health_duration": "计划多长时间？例如：1个月、3个月、半年",
-            "health_activity_level": "运动强度偏好？\n  - 低：散步、瑜伽\n  - 中：跑步、游泳\n  - 高：HIIT、力量训练\n\n💡 提示：选择中/高强度会查询天气，推荐户外运动",
+            "health_activity_level": "运动强度偏好？\n  - 低：散步、瑜伽\n  - 中：跑步、游泳\n  - 高：HIIT、力量训练\n\n 提示：选择中/高强度会查询天气，推荐户外运动",
             "health_height": "你的身高（cm）？例如：170",
             "health_weight": "你的体重（kg）？例如：65",
             "health_age": "你的年龄？例如：25",
             "health_gender": "你的性别？男/女",
-            "health_location": "你所在的城市？例如：北京、上海\n\n💡 提示：用于查询当地天气，推荐适合的运动",
+            "health_location": "你所在的城市？例如：北京、上海\n\n 提示：用于查询当地天气，推荐适合的运动",
             "health_diet_preference": "饮食偏好（可选）？例如：素食、低碳水、无特殊要求",
             "health_medical_conditions": "是否有健康问题或特殊需求（可选）？例如：膝盖受伤、高血压",
 
             # ─── 旅行计划 ───────────────────────────────────────
-            "travel_destination": "你想去哪里？例如：北京、上海、日本、欧洲\n\n💡 提示：提到国外目的地会自动查询汇率",
+            "travel_destination": "你想去哪里？例如：北京、上海、日本、欧洲\n\n 提示：提到国外目的地会自动查询汇率",
             "travel_city": "你从哪个城市出发？例如：北京、上海",
             "travel_days": "计划旅行几天？例如：3天、5天、7天",
-            "travel_budget": "预算大概多少？例如：1000元、5000元、1万元\n\n💡 提示：提到预算会自动查询汇率换算",
-            "travel_target_currency": "目标币种？例如：人民币(CNY)、美元(USD)、欧元(EUR)、日元(JPY)\n\n💡 提示：用于查询汇率，如美元、欧元、日元等",
-            "travel_interests": "对什么感兴趣？例如：文化、美食、自然、购物、历史\n\n💡 提示：\n  - 美食/啤酒 → 搜索当地精酿啤酒\n  - 骑行/单车 → 搜索共享单车\n  - 文化/历史 → 搜索当地景点",
+            "travel_budget": "预算大概多少？例如：1000元、5000元、1万元\n\n 提示：提到预算会自动查询汇率换算",
+            "travel_target_currency": "目标币种？例如：人民币(CNY)、美元(USD)、欧元(EUR)、日元(JPY)\n\n 提示：用于查询汇率，如美元、欧元、日元等",
+            "travel_interests": "对什么感兴趣？例如：文化、美食、自然、购物、历史\n\n 提示：\n  - 美食/啤酒 → 搜索当地精酿啤酒\n  - 骑行/单车 → 搜索共享单车\n  - 文化/历史 → 搜索当地景点",
             "travel_departure_date": "出发日期？例如：2026-07-01（用于查询天气）",
             "travel_accommodation_preference": "住宿偏好（可选）？例如：酒店、民宿、青旅",
 
             # ─── 工作计划 ───────────────────────────────────────
-            "work_task": "任务名称是什么？例如：项目开发、产品设计、市场推广\n\n💡 提示：提到团队人数会查询更多协作资源",
-            "work_duration": "计划多长时间？例如：2周、1个月、3个月\n\n💡 提示：会自动查询中国节假日，排除非工作日",
+            "work_task": "任务名称是什么？例如：项目开发、产品设计、市场推广\n\n 提示：提到团队人数会查询更多协作资源",
+            "work_duration": "计划多长时间？例如：2周、1个月、3个月\n\n 提示：会自动查询中国节假日，排除非工作日",
             "work_team_size": "团队人数？例如：1人、5人、10人",
             "work_deadline": "截止日期？例如：2026-08-01（用于计算工作日）",
 
             # ─── 财务计划 ───────────────────────────────────────
-            "finance_goal": "你的财务目标？例如：存5万、理财、投资、还债\n\n💡 提示：\n  - 存钱/预算 → 查询汇率换算\n  - 投资/股票/基金 → 查询上市公司财报\n  - 理财/经济 → 查询宏观经济数据",
+            "finance_goal": "你的财务目标？例如：存5万、理财、投资、还债\n\n 提示：\n  - 存钱/预算 → 查询汇率换算\n  - 投资/股票/基金 → 查询上市公司财报\n  - 理财/经济 → 查询宏观经济数据",
             "finance_duration": "计划多长时间？例如：1年、2年、5年",
             "finance_monthly_income": "月收入大概多少？例如：5000元、1万元",
             "finance_current_savings": "当前存款？例如：1万元、5万元",
-            "finance_target_currency": "主要币种？例如：人民币(CNY)、美元(USD)\n\n💡 提示：用于查询汇率，如美元、欧元等",
-            "finance_investment_preference": "投资风险偏好（可选）？例如：保守型、稳健型、激进型\n\n💡 提示：会影响投资组合建议",
+            "finance_target_currency": "主要币种？例如：人民币(CNY)、美元(USD)\n\n 提示：用于查询汇率，如美元、欧元等",
+            "finance_investment_preference": "投资风险偏好（可选）？例如：保守型、稳健型、激进型\n\n 提示：会影响投资组合建议",
         }
 
         # 首先尝试获取带前缀的问题
@@ -794,46 +794,46 @@ def get_optional_apis_for_plan(plan_type: str, required_fields: list) -> List[Di
     optional_apis = {
         # 学习计划：默认调用 Open Library + Gutendex
         "learning": [
-            {"name": "📜 古诗词推荐", "description": "根据时节智能推荐古诗词"},
-            {"name": "💬 随机名句", "description": "获取一言名句，激励学习"},
-            {"name": "📄 学术论文", "description": "搜索学术论文"},
-            {"name": "📝 英文诗歌库", "description": "搜索英文诗歌（PoetryDB）"},
+            {"name": " 古诗词推荐", "description": "根据时节智能推荐古诗词"},
+            {"name": " 随机名句", "description": "获取一言名句，激励学习"},
+            {"name": " 学术论文", "description": "搜索学术论文"},
+            {"name": " 英文诗歌库", "description": "搜索英文诗歌（PoetryDB）"},
         ],
         # 健康计划：默认调用 Open-Meteo + TheMealDB
         "health": [
-            {"name": "🏃 运动动作库", "description": "获取专业运动动作指导"},
-            {"name": "💪 肌肉群信息", "description": "了解各肌肉群，科学锻炼"},
-            {"name": "🌤️ 国内天气", "description": "高德天气（更精准）"},
-            {"name": "📍 地理位置", "description": "获取当前位置信息"},
-            {"name": "🥗 食物营养数据", "description": "查询食物卡路里和营养成分"},
-            {"name": "🍎 水果营养数据", "description": "查询水果营养信息"},
+            {"name": " 运动动作库", "description": "获取专业运动动作指导"},
+            {"name": " 肌肉群信息", "description": "了解各肌肉群，科学锻炼"},
+            {"name": " 国内天气", "description": "高德天气（更精准）"},
+            {"name": " 地理位置", "description": "获取当前位置信息"},
+            {"name": " 食物营养数据", "description": "查询食物卡路里和营养成分"},
+            {"name": " 水果营养数据", "description": "查询水果营养信息"},
         ],
         # 旅行计划：默认调用 Open-Meteo
         "travel": [
-            {"name": "💱 汇率查询", "description": "查询目标币种汇率"},
-            {"name": "📅 节假日", "description": "查询中国节假日安排"},
-            {"name": "📍 地理位置", "description": "获取当前位置信息"},
-            {"name": "🌤️ 国内天气", "description": "高德天气（更精准）"},
-            {"name": "🍜 当地美食", "description": "搜索目的地特色美食食谱"},
-            {"name": "🚲 城市单车租赁点", "description": "查询城市共享单车分布"},
-            {"name": "🍺 当地特色饮品店", "description": "查询当地精酿酒吧"},
-            {"name": "🕐 当地时间", "description": "查询目的地时区时间"},
+            {"name": " 汇率查询", "description": "查询目标币种汇率"},
+            {"name": " 节假日", "description": "查询中国节假日安排"},
+            {"name": " 地理位置", "description": "获取当前位置信息"},
+            {"name": " 国内天气", "description": "高德天气（更精准）"},
+            {"name": " 当地美食", "description": "搜索目的地特色美食食谱"},
+            {"name": " 城市单车租赁点", "description": "查询城市共享单车分布"},
+            {"name": " 当地特色饮品店", "description": "查询当地精酿酒吧"},
+            {"name": " 当地时间", "description": "查询目的地时区时间"},
         ],
         # 工作计划：默认调用 timor.tech
         "work": [
-            {"name": "💬 随机名句", "description": "获取激励名句"},
-            {"name": "📜 古诗词", "description": "古诗词推荐"},
-            {"name": "❓ 知识问答", "description": "获取知识问答题目"},
-            {"name": "🏃 运动建议", "description": "工作间隙运动建议"},
-            {"name": "📋 任务模板示例", "description": "获取任务数据模板参考"},
+            {"name": " 随机名句", "description": "获取激励名句"},
+            {"name": " 古诗词", "description": "古诗词推荐"},
+            {"name": " 知识问答", "description": "获取知识问答题目"},
+            {"name": " 运动建议", "description": "工作间隙运动建议"},
+            {"name": " 任务模板示例", "description": "获取任务数据模板参考"},
         ],
         # 财务计划：默认调用 ExchangeRate-API
         "finance": [
-            {"name": "📍 地理位置", "description": "获取当前位置信息"},
-            {"name": "🌤️ 天气", "description": "高德天气"},
-            {"name": "📅 节假日", "description": "查询中国节假日安排"},
-            {"name": "📈 上市公司财报", "description": "查询美股公司财报"},
-            {"name": "💼 投资组合分析", "description": "投资组合优化建议"},
+            {"name": " 地理位置", "description": "获取当前位置信息"},
+            {"name": " 天气", "description": "高德天气"},
+            {"name": " 节假日", "description": "查询中国节假日安排"},
+            {"name": " 上市公司财报", "description": "查询美股公司财报"},
+            {"name": " 投资组合分析", "description": "投资组合优化建议"},
         ],
     }
 
@@ -851,57 +851,57 @@ def get_suggestions_for_plan(plan_type: str) -> str:
     """
     # 每种计划类型的默认功能 + 可选功能说明（委婉描述）
     suggestions = {
-        "learning": """📚 默认会为您推荐相关书籍和电子书资源。
+        "learning": """ 默认会为您推荐相关书籍和电子书资源。
 
-💡 是否还需要以下支撑？
-  1. 📜 古诗词推荐 - 根据时节智能推荐古诗词
-  2. 💬 随机名句 - 获取激励名句
-  3. 📄 学术论文 - 搜索相关学术论文
-  4. 📝 英文诗歌库 - 搜索英文诗歌
-
-回复"是"调用全部，或回复序号如"1,2"选择特定功能，回复"否"跳过。""",
-        "health": """🏃 默认会为您查询天气和推荐健康食谱。
-
-💡 是否还需要以下支撑？
-  1. 🏃 运动动作库 - 获取专业运动动作指导
-  2. 💪 肌肉群信息 - 了解各肌肉群，科学锻炼
-  3. 🌤️ 国内天气 - 高德天气（更精准）
-  4. 📍 地理位置 - 获取当前位置信息
-  5. 🥗 食物营养数据 - 查询食物卡路里
-  6. 🍎 水果营养数据 - 查询水果营养信息
+ 是否还需要以下支撑？
+  1.  古诗词推荐 - 根据时节智能推荐古诗词
+  2.  随机名句 - 获取激励名句
+  3.  学术论文 - 搜索相关学术论文
+  4.  英文诗歌库 - 搜索英文诗歌
 
 回复"是"调用全部，或回复序号如"1,2"选择特定功能，回复"否"跳过。""",
-        "travel": """🗺️ 默认会为您查询目的地天气。
+        "health": """ 默认会为您查询天气和推荐健康食谱。
 
-💡 是否还需要以下支撑？
-  1. 💱 汇率查询 - 查询目标币种汇率
-  2. 📅 节假日 - 查询中国节假日安排
-  3. 📍 地理位置 - 获取当前位置信息
-  4. 🌤️ 国内天气 - 高德天气（更精准）
-  5. 🍜 当地美食 - 搜索目的地特色美食食谱
-  6. 🚲 城市单车租赁点 - 查询城市共享单车分布
-  7. 🍺 当地特色饮品店 - 查询当地精酿酒吧
-  8. 🕐 当地时间 - 查询目的地时区时间
+ 是否还需要以下支撑？
+  1.  运动动作库 - 获取专业运动动作指导
+  2.  肌肉群信息 - 了解各肌肉群，科学锻炼
+  3.  国内天气 - 高德天气（更精准）
+  4.  地理位置 - 获取当前位置信息
+  5.  食物营养数据 - 查询食物卡路里
+  6.  水果营养数据 - 查询水果营养信息
+
+回复"是"调用全部，或回复序号如"1,2"选择特定功能，回复"否"跳过。""",
+        "travel": """ 默认会为您查询目的地天气。
+
+ 是否还需要以下支撑？
+  1.  汇率查询 - 查询目标币种汇率
+  2.  节假日 - 查询中国节假日安排
+  3.  地理位置 - 获取当前位置信息
+  4.  国内天气 - 高德天气（更精准）
+  5.  当地美食 - 搜索目的地特色美食食谱
+  6.  城市单车租赁点 - 查询城市共享单车分布
+  7.  当地特色饮品店 - 查询当地精酿酒吧
+  8.  当地时间 - 查询目的地时区时间
 
 回复"是"调用全部，或回复序号如"1,3"选择特定功能，回复"否"跳过。""",
-        "work": """💼 默认会为您查询中国节假日安排。
+        "work": """ 默认会为您查询中国节假日安排。
 
-💡 是否还需要以下支撑？
-  1. 💬 随机名句 - 获取激励名句
-  2. 📜 古诗词 - 古诗词推荐
-  3. ❓ 知识问答 - 获取知识问答题目
-  4. 🏃 运动建议 - 工作间隙运动建议
-  5. 📋 任务模板示例 - 获取任务数据模板参考
+ 是否还需要以下支撑？
+  1.  随机名句 - 获取激励名句
+  2.  古诗词 - 古诗词推荐
+  3.  知识问答 - 获取知识问答题目
+  4.  运动建议 - 工作间隙运动建议
+  5.  任务模板示例 - 获取任务数据模板参考
 
 回复"是"调用全部，或回复序号如"1"选择特定功能，回复"否"跳过。""",
-        "finance": """💰 默认会为您查询汇率信息。
+        "finance": """ 默认会为您查询汇率信息。
 
-💡 是否还需要以下支撑？
-  1. 📍 地理位置 - 获取当前位置信息
-  2. 🌤️ 天气 - 高德天气
-  3. 📅 节假日 - 查询中国节假日安排
-  4. 📈 上市公司财报 - 查询美股公司财报
-  5. 💼 投资组合分析 - 投资组合优化建议
+ 是否还需要以下支撑？
+  1.  地理位置 - 获取当前位置信息
+  2.  天气 - 高德天气
+  3.  节假日 - 查询中国节假日安排
+  4.  上市公司财报 - 查询美股公司财报
+  5.  投资组合分析 - 投资组合优化建议
 
 回复"是"调用全部，或回复序号如"1"选择特定功能，回复"否"跳过。""",
     }
@@ -914,33 +914,33 @@ def _get_api_function_by_name(api_name: str, plan_type: str):
     # 委婉描述 → API 函数的映射
     api_mapping = {
         # 学习计划可选 API
-        "📜 古诗词推荐": get_jinrishici,
-        "📜 古诗词": get_jinrishici,
-        "💬 随机名句": get_hitokoto,
-        "📄 学术论文": search_crossref,
-        "📝 英文诗歌库": search_poetrydb,
+        " 古诗词推荐": get_jinrishici,
+        " 古诗词": get_jinrishici,
+        " 随机名句": get_hitokoto,
+        " 学术论文": search_crossref,
+        " 英文诗歌库": search_poetrydb,
         # 健康计划可选 API
-        "🏃 运动动作库": get_wger_exercises,
-        "🏃 运动建议": get_wger_exercises,
-        "💪 肌肉群信息": get_wger_muscles,
-        "🌤️ 国内天气": get_amap_weather,
-        "📍 地理位置": get_ip_location,
-        "🥗 食物营养数据": get_food_nutrition,
-        "🍎 水果营养数据": get_fruit_nutrition,
+        " 运动动作库": get_wger_exercises,
+        " 运动建议": get_wger_exercises,
+        " 肌肉群信息": get_wger_muscles,
+        " 国内天气": get_amap_weather,
+        " 地理位置": get_ip_location,
+        " 食物营养数据": get_food_nutrition,
+        " 水果营养数据": get_fruit_nutrition,
         # 旅行计划可选 API
-        "💱 汇率查询": get_exchange_rates,
-        "📅 节假日": get_china_holidays,
-        "🍜 当地美食": get_themealdb,
-        "🚲 城市单车租赁点": get_city_bikes,
-        "🍺 当地特色饮品店": get_open_brewery,
-        "🕐 当地时间": get_world_time,
+        " 汇率查询": get_exchange_rates,
+        " 节假日": get_china_holidays,
+        " 当地美食": get_themealdb,
+        " 城市单车租赁点": get_city_bikes,
+        " 当地特色饮品店": get_open_brewery,
+        " 当地时间": get_world_time,
         # 工作计划可选 API
-        "❓ 知识问答": get_open_trivia,
-        "📋 任务模板示例": get_json_placeholder,
+        " 知识问答": get_open_trivia,
+        " 任务模板示例": get_json_placeholder,
         # 财务计划可选 API
-        "🌤️ 天气": get_amap_weather,
-        "📈 上市公司财报": get_sec_edgar,
-        "💼 投资组合分析": get_portfolio_optimizer,
+        " 天气": get_amap_weather,
+        " 上市公司财报": get_sec_edgar,
+        " 投资组合分析": get_portfolio_optimizer,
     }
 
     return api_mapping.get(api_name)
@@ -976,34 +976,34 @@ def preview_apis_to_call(
     # 3. 生成 API 描述（委婉描述，不直接提 API 名称）
     api_descriptions = {
         # 学习计划
-        "search_open_library": "📚 书籍推荐 - 搜索相关书籍",
-        "search_gutendex": "📖 电子书 - 搜索免费电子书",
-        "get_jinrishici": "📜 古诗词推荐 - 根据时节智能推荐",
-        "get_hitokoto": "💬 随机名句 - 获取激励名句",
-        "search_crossref": "📄 学术论文 - 搜索学术论文",
-        "search_poetrydb": "📝 英文诗歌库 - 搜索英文诗歌",
+        "search_open_library": " 书籍推荐 - 搜索相关书籍",
+        "search_gutendex": " 电子书 - 搜索免费电子书",
+        "get_jinrishici": " 古诗词推荐 - 根据时节智能推荐",
+        "get_hitokoto": " 随机名句 - 获取激励名句",
+        "search_crossref": " 学术论文 - 搜索学术论文",
+        "search_poetrydb": " 英文诗歌库 - 搜索英文诗歌",
         # 健康计划
-        "get_weather_forecast": "🌤️ 天气预报 - 查询天气",
-        "get_themealdb": "🍜 健康食谱 - 推荐健康美食",
-        "get_wger_exercises": "🏃 运动动作库 - 专业运动指导",
-        "get_wger_muscles": "💪 肌肉群信息 - 科学锻炼参考",
-        "get_amap_weather": "🌤️ 国内天气 - 高德天气（更精准）",
-        "get_ip_location": "📍 地理位置 - 获取当前位置",
-        "get_food_nutrition": "🥗 食物营养数据 - 查询食物卡路里",
-        "get_fruit_nutrition": "🍎 水果营养数据 - 查询水果营养信息",
+        "get_weather_forecast": " 天气预报 - 查询天气",
+        "get_themealdb": " 健康食谱 - 推荐健康美食",
+        "get_wger_exercises": " 运动动作库 - 专业运动指导",
+        "get_wger_muscles": " 肌肉群信息 - 科学锻炼参考",
+        "get_amap_weather": " 国内天气 - 高德天气（更精准）",
+        "get_ip_location": " 地理位置 - 获取当前位置",
+        "get_food_nutrition": " 食物营养数据 - 查询食物卡路里",
+        "get_fruit_nutrition": " 水果营养数据 - 查询水果营养信息",
         # 旅行计划
-        "get_exchange_rates": "💱 汇率查询 - 查询目标币种汇率",
-        "get_china_holidays": "📅 节假日 - 查询中国节假日安排",
-        "get_city_bikes": "🚲 城市单车租赁点 - 查询共享单车分布",
-        "get_open_brewery": "🍺 当地特色饮品店 - 查询当地精酿酒吧",
-        "get_world_time": "🕐 当地时间 - 查询目的地时区",
+        "get_exchange_rates": " 汇率查询 - 查询目标币种汇率",
+        "get_china_holidays": " 节假日 - 查询中国节假日安排",
+        "get_city_bikes": " 城市单车租赁点 - 查询共享单车分布",
+        "get_open_brewery": " 当地特色饮品店 - 查询当地精酿酒吧",
+        "get_world_time": " 当地时间 - 查询目的地时区",
         # 工作计划
-        "get_open_trivia": "❓ 知识问答 - 获取知识问答题目",
-        "get_json_placeholder": "📋 任务模板示例 - 获取任务数据模板",
+        "get_open_trivia": " 知识问答 - 获取知识问答题目",
+        "get_json_placeholder": " 任务模板示例 - 获取任务数据模板",
         # 财务计划
-        "get_economic_data": "📊 经济数据 - 查询经济指标",
-        "get_sec_edgar": "📈 上市公司财报 - 查询美股公司财报",
-        "get_portfolio_optimizer": "💼 投资组合分析 - 投资组合优化建议",
+        "get_economic_data": " 经济数据 - 查询经济指标",
+        "get_sec_edgar": " 上市公司财报 - 查询美股公司财报",
+        "get_portfolio_optimizer": " 投资组合分析 - 投资组合优化建议",
     }
 
     # 4. 构建预览文本
@@ -1012,22 +1012,22 @@ def preview_apis_to_call(
 
     lines = []
     if default_names:
-        lines.append("📌 默认调用：")
+        lines.append(" 默认调用：")
         for name in default_names:
             lines.append(f"  {api_descriptions.get(name, name)}")
 
     if optional_names:
-        lines.append("\n✅ 你选择的额外资源：")
+        lines.append("\n 你选择的额外资源：")
         for name in optional_names:
             lines.append(f"  {api_descriptions.get(name, name)}")
     else:
         # 如果没有用户选择的可选 API，提示用户可以选择
-        lines.append("\n💡 目前只调用默认资源，如需额外资源请回复序号（如\"1,2\"）")
+        lines.append("\n 目前只调用默认资源，如需额外资源请回复序号（如\"1,2\"）")
 
     if not lines:
         return ""
 
-    return "🔍 将调用以下外部资源：\n" + "\n".join(lines)
+    return " 将调用以下外部资源：\n" + "\n".join(lines)
 
 
 def _get_default_apis(plan_type: str) -> List:
@@ -1460,15 +1460,22 @@ def generate_plan_with_llm(
 def _get_plan_system_prompt(plan_type: str) -> str:
     """获取计划生成的系统提示词（强制来源标注版）"""
     prompts = {
-        "learning": """你是一个专业的学习规划师。请根据用户提供的信息，制定一个详细、可执行的学习计划。
+        "learning": """你是一个专业的学习规划师。请根据用户提供的信息，制定一个精简、可执行的学习计划。
 
 要求：
-1. 计划要具体、可操作，包含每天/每周的学习任务
-2. 时间安排要合理，符合用户的时间预算
+1. 计划要极度精简，每条内容控制在15字以内，总字数不超过350字
+2. ⚠️ 必须严格遵守用户指定的时长，绝对不能超出！如果用户说"一个月"，计划就只能是约4周/30天，不能有第5周及以后的内容
 3. 如果提供了知识库内容，要结合知识库内容制定计划
 4. 如果提供了外部资源（如书籍、课程），要在计划中引用
-5. 使用清晰的格式，包含：目标、时间安排、学习内容、练习任务、资源推荐
+5. 使用清晰的格式，包含：目标、每周安排、资源推荐
 6. 用中文回答
+
+【强制精简要求 - 必须遵守】
+- 目标部分不超过3条
+- 每周安排不超过3条要点，每条不超过15字
+- 不要重复描述相同内容
+- 不要写冗余的解释性文字
+- 只保留核心要点，去掉次要内容
 
 【强制格式要求 - 必须遵守】
 - 只有当你确实从【知识库参考】或【外部资源查询结果】中看到了具体数据时，才标注来源
@@ -1476,19 +1483,47 @@ def _get_plan_system_prompt(plan_type: str) -> str:
 - 绝对禁止编造来源：如 [来源: 文档名称]、[来源: 模板]、[来源: 未知]、[来源: 用户提供] 等都是不允许的
 - 如果某条信息没有对应数据来源，不要写任何来源标注，直接写内容即可
 - 禁止在结尾写任何"未获取到资源"/"无法获取数据"等免责声明，这与上文已引用的来源自相矛盾
-- 示例：《Python Crash Course》- Eric Matthes [来源: Open Library]
-- 示例：北京明天中雨，建议室内运动 [来源: Open-Meteo 天气预报]
-- 示例：计划每天学习2小时（无来源，直接写即可，不需要任何说明）""",
 
-        "health": """你是一个专业的健康顾问。请根据用户提供的信息，制定一个科学、健康的健康计划。
+【排版格式要求 - 必须遵守】
+- 每一条内容必须单独一行，不要把多条内容挤在同一行
+- 用 "---" 分隔不同章节（目标、每周安排、资源推荐等）
+- 每周/每天的计划用清晰的层级结构：
+  第一周标题独占一行
+  每个学习要点用 "•" 或数字开头，独占一行
+  子要点缩进一级，独占一行
+- 不要在行尾加 "..." 省略号
+
+【绝对禁止 - 表情符号】
+- 绝对禁止使用任何表情符号（如 1️⃣、2️⃣、✅、⚠️、💡 等）
+- 绝对禁止使用 Unicode emoji 字符
+- 只用纯数字或"•"作为列表标记
+
+【绝对禁止 - 精确时间段】
+- 绝对禁止写精确的时间段（如 01:00-02:00、9:00-10:30 等）
+- 只说"每天1小时学习XX内容"即可，不需要具体几点到几点
+- 如果用户说"每天一小时"，就写"每天1小时：XX内容"，不要拆分时间段
+
+【绝对禁止 - 日期相关】
+- 绝对禁止编造具体日期（如 2024-01-01、2025/01/01 等）
+- 只能用相对时间：第一周、第二周、第1天、第2天 等""",
+
+        "health": """你是一个专业的健康顾问。请根据用户提供的信息，制定一个精简、科学的健康计划。
 
 要求：
-1. 计划要科学、安全，考虑用户的身体状况
-2. 包含运动方案、饮食建议、作息安排
-3. 如果提供了天气信息，要根据天气调整运动建议
-4. 如果提供了营养数据，要在饮食建议中引用
-5. 使用清晰的格式，包含：目标、运动计划、饮食方案、注意事项
-6. 用中文回答
+1. 计划要极度精简，每条内容控制在15字以内，总字数不超过350字
+2. ⚠️ 必须严格遵守用户指定的时长，绝对不能超出！用户说多久就做多久的计划
+3. 包含运动方案、饮食建议、作息安排
+4. 如果提供了天气信息，要根据天气调整运动建议
+5. 如果提供了营养数据，要在饮食建议中引用
+6. 使用清晰的格式，包含：目标、运动计划、饮食方案、注意事项
+7. 用中文回答
+
+【强制精简要求 - 必须遵守】
+- 目标部分不超过3条
+- 每周安排不超过3条要点，每条不超过15字
+- 不要重复描述相同内容
+- 不要写冗余的解释性文字
+- 只保留核心要点，去掉次要内容
 
 【强制格式要求 - 必须遵守】
 - 只有当你确实从【知识库参考】或【外部资源查询结果】中看到了具体数据时，才标注来源
@@ -1496,19 +1531,50 @@ def _get_plan_system_prompt(plan_type: str) -> str:
 - 绝对禁止编造来源：如 [来源: 文档名称]、[来源: 模板]、[来源: 用户提供]、[来源: 健康笔记.pdf] 等都是不允许的
 - 如果某条信息没有对应数据来源（如用户的性别/年龄/目标等基础信息），不要写任何来源标注，直接写内容即可
 - 禁止在结尾写任何"未获取到资源"/"无法获取数据"等免责声明，这与上文已引用的来源自相矛盾
-- 示例：建议每天摄入2000大卡 [来源: Open Food Facts]
-- 示例：苹果每100g含52大卡 [来源: Fruityvice]
-- 示例：每周进行3次运动，每次30分钟（无来源，直接写即可，不需要任何说明）""",
 
-        "travel": """你是一个专业的旅行规划师。请根据用户提供的信息，制定一个详细的旅行计划。
+【排版格式要求 - 必须遵守】
+- 每一条内容必须单独一行，不要把多条内容挤在同一行
+- 用 "---" 分隔不同章节
+- 每个要点用 "•" 或数字开头，独占一行
+- 子要点缩进一级，独占一行
+- 不要在行尾加 "..." 省略号
+
+【绝对禁止 - 表情符号】
+- 绝对禁止使用任何表情符号（如 1️⃣、2️⃣、✅、⚠️、💡 等）
+- 绝对禁止使用 Unicode emoji 字符
+- 不要使用任何特殊符号作为序号
+- 只用纯数字或"•"作为列表标记
+
+【绝对禁止 - 精确时间段】
+- 绝对禁止写精确的时间段（如 01:00-02:00、9:00-10:30 等）
+- 绝对禁止写"第X小时"、"XX:XX"格式的时间
+- 只说"每天1小时学习XX内容"即可，不需要具体几点到几点
+- 如果用户说"每天一小时"，就写"每天1小时：XX内容"，不要拆分时间段
+
+【绝对禁止 - 日期相关】
+- 绝对禁止编造具体日期（如 2024-01-01、2025/01/01 等）
+- 绝对禁止写"YYYY-MM-DD"格式的日期
+- 只能用相对时间：第一周、第二周、周一、周二、第1天、第2天 等
+- 不要写"2024-01-01 至 2024-01-07"这种日期范围
+- 只写"第一周"、"第二周"即可，不需要具体日期""",
+
+        "travel": """你是一个专业的旅行规划师。请根据用户提供的信息，制定一个精简的旅行计划。
 
 要求：
-1. 行程要合理，时间安排要充裕
-2. 包含景点推荐、交通建议、住宿推荐、美食推荐
-3. 如果提供了天气信息，要根据天气调整行程
-4. 如果提供了汇率信息，要在预算中引用
-5. 使用清晰的格式，包含：行程概览、每日安排、预算估算、注意事项
-6. 用中文回答
+1. 计划要极度精简，每条内容控制在15字以内，总字数不超过350字
+2. ⚠️ 必须严格遵守用户指定的旅行天数，绝对不能超出！用户说几天就安排几天的行程
+3. 包含景点推荐、交通建议、住宿推荐、美食推荐
+4. 如果提供了天气信息，要根据天气调整行程
+5. 如果提供了汇率信息，要在预算中引用
+6. 使用清晰的格式，包含：行程概览、每日安排、预算估算、注意事项
+7. 用中文回答
+
+【强制精简要求 - 必须遵守】
+- 目标部分不超过3条
+- 每日安排不超过3条要点，每条不超过15字
+- 不要重复描述相同内容
+- 不要写冗余的解释性文字
+- 只保留核心要点，去掉次要内容
 
 【强制格式要求 - 必须遵守】
 - 只有当你确实从【知识库参考】或【外部资源查询结果】中看到了具体数据时，才标注来源
@@ -1516,18 +1582,44 @@ def _get_plan_system_prompt(plan_type: str) -> str:
 - 绝对禁止编造来源：如 [来源: 文档名称]、[来源: 模板]、[来源: 旅行攻略.pdf] 等都是不允许的
 - 如果某条信息没有对应数据来源，不要写任何来源标注，直接写内容即可
 - 禁止在结尾写任何"未获取到资源"/"无法获取数据"等免责声明，这与上文已引用的来源自相矛盾
-- 示例：东京明日天气：晴，26°C [来源: Open-Meteo 天气预报]
-- 示例：1万预算约兑换1400美元 [来源: ExchangeRate-API 汇率]""",
 
-        "work": """你是一个专业的项目管理顾问。请根据用户提供的信息，制定一个高效的工作计划。
+【排版格式要求 - 必须遵守】
+- 每一条内容必须单独一行，不要把多条内容挤在同一行
+- 用 "---" 分隔不同章节
+- 每个要点用 "•" 或数字开头，独占一行
+- 子要点缩进一级，独占一行
+- 不要在行尾加 "..." 省略号
+
+【绝对禁止 - 表情符号】
+- 绝对禁止使用任何表情符号（如 1️⃣、2️⃣、✅、⚠️、💡 等）
+- 绝对禁止使用 Unicode emoji 字符
+- 只用纯数字或"•"作为列表标记
+
+【绝对禁止 - 精确时间段】
+- 绝对禁止写精确的时间段（如 01:00-02:00、9:00-10:30 等）
+- 只说"每天安排XX活动"即可，不需要具体几点到几点
+
+【绝对禁止 - 日期相关】
+- 绝对禁止编造具体日期（如 2024-01-01、2025/01/01 等）
+- 只能用相对时间：第一天、第二天、第1天、第2天 等""",
+
+        "work": """你是一个专业的项目管理顾问。请根据用户提供的信息，制定一个精简的工作计划。
 
 要求：
-1. 任务分解要合理，时间安排要现实
-2. 包含里程碑、任务列表、时间线
-3. 如果提供了节假日信息，要避开节假日安排工作
-4. 如果提供了团队信息，要考虑团队协作
-5. 使用清晰的格式，包含：项目目标、任务分解、时间安排、资源需求
-6. 用中文回答
+1. 计划要极度精简，每条内容控制在15字以内，总字数不超过350字
+2. ⚠️ 必须严格遵守用户指定的工期，绝对不能超出！
+3. 包含里程碑、任务列表、时间线
+4. 如果提供了节假日信息，要避开节假日安排工作
+5. 如果提供了团队信息，要考虑团队协作
+6. 使用清晰的格式，包含：项目目标、任务分解、时间安排、资源需求
+7. 用中文回答
+
+【强制精简要求 - 必须遵守】
+- 目标部分不超过3条
+- 每周安排不超过3条要点，每条不超过15字
+- 不要重复描述相同内容
+- 不要写冗余的解释性文字
+- 只保留核心要点，去掉次要内容
 
 【强制格式要求 - 必须遵守】
 - 只有当你确实从【知识库参考】或【外部资源查询结果】中看到了具体数据时，才标注来源
@@ -1535,18 +1627,44 @@ def _get_plan_system_prompt(plan_type: str) -> str:
 - 绝对禁止编造来源：如 [来源: 文档名称]、[来源: 模板]、[来源: 项目计划.pdf] 等都是不允许的
 - 如果某条信息没有对应数据来源，不要写任何来源标注，直接写内容即可
 - 禁止在结尾写任何"未获取到资源"/"无法获取数据"等免责声明，这与上文已引用的来源自相矛盾
-- 示例：8月有3个休息日，建议避开 [来源: timor.tech 中国节假日]
-- 示例：建议每周召开1次进度会议（无来源，直接写即可，不需要任何说明）""",
 
-        "finance": """你是一个专业的财务顾问。请根据用户提供的信息，制定一个合理的财务计划。
+【排版格式要求 - 必须遵守】
+- 每一条内容必须单独一行，不要把多条内容挤在同一行
+- 用 "---" 分隔不同章节
+- 每个要点用 "•" 或数字开头，独占一行
+- 子要点缩进一级，独占一行
+- 不要在行尾加 "..." 省略号
+
+【绝对禁止 - 表情符号】
+- 绝对禁止使用任何表情符号（如 1️⃣、2️⃣、✅、⚠️、💡 等）
+- 绝对禁止使用 Unicode emoji 字符
+- 只用纯数字或"•"作为列表标记
+
+【绝对禁止 - 精确时间段】
+- 绝对禁止写精确的时间段（如 01:00-02:00、9:00-10:30 等）
+- 只说"每周完成XX任务"即可，不需要具体几点到几点
+
+【绝对禁止 - 日期相关】
+- 绝对禁止编造具体日期（如 2024-01-01、2025/01/01 等）
+- 只能用相对时间：第一周、第二周、第一天、第二天 等""",
+
+        "finance": """你是一个专业的财务顾问。请根据用户提供的信息，制定一个精简的财务计划。
 
 要求：
-1. 计划要量入为出，符合用户的收入情况
-2. 包含储蓄计划、支出预算，投资建议
-3. 如果提供了汇率信息，要在计划中引用
-4. 如果提供了经济数据，要在投资建议中参考
-5. 使用清晰的格式，包含：财务目标、月度计划、储蓄策略，投资建议
-6. 用中文回答
+1. 计划要极度精简，每条内容控制在15字以内，总字数不超过350字
+2. ⚠️ 必须严格遵守用户指定的时间范围，绝对不能超出！
+3. 包含储蓄计划、支出预算，投资建议
+4. 如果提供了汇率信息，要在计划中引用
+5. 如果提供了经济数据，要在投资建议中参考
+6. 使用清晰的格式，包含：财务目标、月度计划、储蓄策略，投资建议
+7. 用中文回答
+
+【强制精简要求 - 必须遵守】
+- 目标部分不超过3条
+- 每月安排不超过3条要点，每条不超过15字
+- 不要重复描述相同内容
+- 不要写冗余的解释性文字
+- 只保留核心要点，去掉次要内容
 
 【强制格式要求 - 必须遵守】
 - 只有当你确实从【知识库参考】或【外部资源查询结果】中看到了具体数据时，才标注来源
@@ -1554,8 +1672,26 @@ def _get_plan_system_prompt(plan_type: str) -> str:
 - 绝对禁止编造来源：如 [来源: 文档名称]、[来源: 模板]、[来源: 财务计划.pdf] 等都是不允许的
 - 如果某条信息没有对应数据来源，不要写任何来源标注，直接写内容即可
 - 禁止在结尾写任何"未获取到资源"/"无法获取数据"等免责声明，这与上文已引用的来源自相矛盾
-- 示例：当前汇率 1 USD = 7.25 CNY [来源: ExchangeRate-API 汇率]
-- 示例：建议每月储蓄收入的20%（无来源，直接写即可，不需要任何说明）""",
+
+【排版格式要求 - 必须遵守】
+- 每一条内容必须单独一行，不要把多条内容挤在同一行
+- 用 "---" 分隔不同章节
+- 每个要点用 "•" 或数字开头，独占一行
+- 子要点缩进一级，独占一行
+- 不要在行尾加 "..." 省略号
+
+【绝对禁止 - 表情符号】
+- 绝对禁止使用任何表情符号（如 1️⃣、2️⃣、✅、⚠️、💡 等）
+- 绝对禁止使用 Unicode emoji 字符
+- 只用纯数字或"•"作为列表标记
+
+【绝对禁止 - 精确时间段】
+- 绝对禁止写精确的时间段（如 01:00-02:00、9:00-10:30 等）
+- 只说"每月完成XX任务"即可，不需要具体几点到几点
+
+【绝对禁止 - 日期相关】
+- 绝对禁止编造具体日期（如 2024-01-01、2025/01/01 等）
+- 只能用相对时间：第一月、第二月、第一周、第二周 等""",
     }
 
     return prompts.get(plan_type, prompts["learning"])
@@ -1586,6 +1722,33 @@ def _build_plan_user_prompt(
             }
             field_name = field_names.get(key, key)
             info_text += f"- {field_name}: {value}\n"
+
+    # 2. 时长约束（强制提醒）
+    duration_text = ""
+    if plan_info.get("duration"):
+        try:
+            from app.skills.plan_templates import _parse_duration
+            total_days = _parse_duration(str(plan_info["duration"]))
+            total_weeks = total_days // 7
+            duration_text = (
+                f"\n⚠️【时长约束 - 必须严格遵守！】\n"
+                f"- 用户指定的总时长：{plan_info['duration']}（约 {total_days} 天 / {total_weeks} 周）\n"
+                f"- 计划的所有阶段必须在此时间范围内完成，绝对不能超出！\n"
+                f"- 如果是周计划，最多只能有 {max(total_weeks, 1)} 周，不能有第 {total_weeks + 1} 周及以后的内容\n"
+            )
+        except Exception:
+            pass
+    elif plan_info.get("days"):
+        days_val = plan_info["days"]
+        try:
+            total_days = int(days_val)
+            duration_text = (
+                f"\n⚠️【时长约束 - 必须严格遵守！】\n"
+                f"- 用户指定的总天数：{total_days} 天\n"
+                f"- 行程必须在 {total_days} 天内完成，不能超出！\n"
+            )
+        except Exception:
+            pass
 
     # 2. RAG 知识库内容（强制带文档来源）
     rag_text = ""
@@ -1928,8 +2091,14 @@ def _build_plan_user_prompt(
 - 广州2026-08-01为工作日 [来源: timor.tech 中国节假日]
 
 如果没有某类数据，也请直接说明"本次未查询到XX数据"，不要捏造。
+
+【排版要求】
+- 每条内容单独一行，不要挤在一起
+- 用 "---" 分隔章节
+- 要点用 "•" 开头，子要点缩进
+- 简洁明了，不要冗长重复
 """
-    return info_text + rag_text + api_text + instruction
+    return info_text + duration_text + rag_text + api_text + instruction
 
 
 def _generate_plan_with_template(
@@ -1982,6 +2151,14 @@ def extract_info_from_input(user_input: str, plan_type: str) -> Dict[str, Any]:
         llm_result = _extract_with_llm(user_input, plan_type)
         if llm_result and len(llm_result) > 0:
             print(f"[DEBUG] LLM extraction successful: {llm_result}")
+            # LLM 提取成功，但可能漏了某些字段，用规则补充缺失的字段
+            if "," in user_input and len(user_input.split(",")) >= 3:
+                fallback_info = _extract_from_comma_separated(user_input, plan_type)
+                # 补充 LLM 没提取到的字段
+                for key in ["topic", "goal", "duration", "daily_hours", "level"]:
+                    if key not in llm_result and key in fallback_info:
+                        llm_result[key] = fallback_info[key]
+                        print(f"[DEBUG] Fallback filled missing field: {key}={fallback_info[key]}")
             return llm_result
     except Exception as e:
         print(f"[WARNING] LLM extraction failed, falling back to rules: {e}")
@@ -1989,7 +2166,9 @@ def extract_info_from_input(user_input: str, plan_type: str) -> Dict[str, Any]:
     # Fallback 到规则提取
     # 检查是否是逗号分隔的列表格式
     if "," in user_input and len(user_input.split(",")) >= 3:
-        return _extract_from_comma_separated(user_input, plan_type)
+        fallback_result = _extract_from_comma_separated(user_input, plan_type)
+        print(f"[DEBUG] Fallback to comma-separated extraction, result={fallback_result}")
+        return fallback_result
 
     # 否则使用自然语言提取
     return _extract_from_natural_language(user_input, plan_type)
@@ -2132,20 +2311,26 @@ def _extract_from_comma_separated(user_input: str, plan_type: str) -> Dict[str, 
         for value in parts:
             value_lower = value.lower()
 
-            # 1. 识别时长（包含数字+时间单位，或量词+时间单位）
-            if re.search(r"(\d+)(个月|周|天|年|小时|分钟)", value) and "duration" not in info:
-                info["duration"] = value
-            elif re.search(r"(一|两|二|三|四|五|六|七|八|九|十)(个)?(月|周|天|年|小时|分钟)", value) and "duration" not in info:
-                info["duration"] = value
-
-            # 2. 识别每天学习时间（包含"每天"或"小时"）
-            elif re.search(r"每天|(\d+)小时", value) and "daily_hours" not in info:
+            # 1. 识别每天学习时间（包含"每天"或"X小时/X分钟"，支持中文数字和阿拉伯数字）
+            if re.search(r"每天|(\d+)[小時]时|(\d+)分钟|(一|两|二|三|四|五|六|七|八|九|十)[小時]时", value) and "daily_hours" not in info:
                 # 提取小时数
                 hours_match = re.search(r"(\d+)小时", value)
                 if hours_match:
                     info["daily_hours"] = int(hours_match.group(1))
                 else:
-                    info["daily_hours"] = value
+                    # 中文数字小时
+                    cn_num_map = {"一": 1, "两": 2, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+                    cn_match = re.search(r"(一|两|二|三|四|五|六|七|八|九|十)小时", value)
+                    if cn_match:
+                        info["daily_hours"] = cn_num_map.get(cn_match.group(1), 1)
+                    else:
+                        info["daily_hours"] = value
+
+            # 2. 识别时长（包含数字+时间单位，或量词+时间单位，但排除小时/分钟）
+            elif re.search(r"(\d+)(个月|周|天|年)", value) and "duration" not in info:
+                info["duration"] = value
+            elif re.search(r"(一|两|二|三|四|五|六|七|八|九|十)(个)?(月|周|天|年)", value) and "duration" not in info:
+                info["duration"] = value
 
             # 3. 识别目标（关键词匹配，但要排除"学习"开头的短语）
             elif any(kw in value for kw in ["入门", "进阶", "实战", "考试", "基础", "提高"]) and "goal" not in info:
@@ -2432,6 +2617,8 @@ def generate_plan(plan_type: str, plan_info: Dict[str, Any], api_results: Dict[s
                   rag_context: Optional[str] = None, context_summary: Optional[str] = None) -> str:
     """生成计划的主函数
 
+    优先使用 LLM 生成丰富的计划，LLM 失败时 fallback 到模板。
+
     Args:
         plan_type: 计划类型（learning/health/travel/work/finance）
         plan_info: 用户填写的字段信息
@@ -2439,62 +2626,20 @@ def generate_plan(plan_type: str, plan_info: Dict[str, Any], api_results: Dict[s
         rag_context: 知识库查询结果（来自 RAG）
         context_summary: 上下文历史摘要（从对话历史中提取）
     """
-
-    # 1. 将 API 结果传递给模板（用于展示原始数据）
-    plan_info["_api_data"] = api_results
-
-    # 2. 构建完整的上下文（知识库 + 上下文历史）
-    # 这样 LLM 在生成计划时，可以参考：
-    # - 知识库中的相关内容（如用户上传的学习笔记）
-    # - 对话历史中的相关信息（如用户之前提到的目标、偏好）
     full_context = ""
     if rag_context:
         full_context += f"\n\n【知识库参考】\n{rag_context}"
     if context_summary:
         full_context += f"\n\n【对话历史摘要】\n{context_summary}"
 
-    # 3. 根据类型调用对应的 Skill 模板
-    if plan_type == "learning":
-        # 从 API 结果中提取书籍
-        books = []
-        if "search_open_library" in api_results and "books" in api_results["search_open_library"]:
-            books.extend(api_results["search_open_library"]["books"])
-        if "search_gutendex" in api_results and "books" in api_results["search_gutendex"]:
-            books.extend(api_results["search_gutendex"]["books"])
-        plan_info["books"] = books[:3]  # 最多3本书
+    try:
+        plan_text = generate_plan_with_llm(plan_type, plan_info, api_results, rag_context)
+        if plan_text and len(plan_text.strip()) > 100:
+            return plan_text
+    except Exception as e:
+        print(f"[WARN] LLM plan generation failed, falling back to template: {e}")
 
-        return generate_learning_plan(plan_info, full_context)
-
-    elif plan_type == "health":
-        # 从 API 结果中提取天气
-        if "get_weather_forecast" in api_results:
-            plan_info["weather"] = api_results["get_weather_forecast"]
-
-        return generate_health_plan(plan_info, full_context)
-
-    elif plan_type == "travel":
-        # 从 API 结果中提取天气
-        if "get_weather_forecast" in api_results:
-            plan_info["weather"] = api_results["get_weather_forecast"]
-
-        return generate_travel_plan(plan_info, full_context)
-
-    elif plan_type == "work":
-        # 从 API 结果中提取节假日
-        if "get_china_holidays" in api_results:
-            plan_info["holidays"] = api_results["get_china_holidays"]
-
-        return generate_work_plan(plan_info, full_context)
-
-    elif plan_type == "finance":
-        # 从 API 结果中提取汇率
-        if "get_exchange_rates" in api_results:
-            plan_info["rates"] = api_results["get_exchange_rates"]
-
-        return generate_finance_plan(plan_info, full_context)
-
-    else:
-        return "抱歉，暂不支持该类型的计划生成。"
+    return _generate_plan_with_template(plan_type, plan_info, api_results, rag_context)
 
 # ─── 导出 ──────────────────────────────────────────────────────
 

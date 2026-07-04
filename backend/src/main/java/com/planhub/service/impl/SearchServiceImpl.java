@@ -36,13 +36,18 @@ public class SearchServiceImpl implements SearchService {
 
     @Override
     public SearchResponse search(String query, String type, int page, int size) {
+        return search(query, type, page, size, null);
+    }
+
+    @Override
+    public SearchResponse search(String query, String type, int page, int size, Long currentUserId) {
         SearchResponse response = new SearchResponse();
         int totalResults = 0;
         Page<User> userPageParam = new Page<>(page - 1, size);
         Page<Post> postPageParam = new Page<>(page - 1, size);
         Page<Plan> planPageParam = new Page<>(page - 1, size);
         
-        log.info("Searching for query: {}, type: {}", query, type);
+        log.info("Searching for query: {}, type: {}, currentUserId: {}", query, type, currentUserId);
 
         if ("all".equals(type) || "users".equals(type)) {
             QueryWrapper<User> userQueryWrapper = new QueryWrapper<>();
@@ -100,12 +105,33 @@ public class SearchServiceImpl implements SearchService {
         if ("all".equals(type) || "plans".equals(type)) {
             try {
                 log.info("Searching plans...");
-                IPage<Plan> planPage = planMapper.selectByTitleContainingOrDescriptionContainingAndVisibility(
+                List<Plan> allPlans = new ArrayList<>();
+                
+                // 1. 搜索公开的计划
+                IPage<Plan> publicPlanPage = planMapper.selectByTitleContainingOrDescriptionContainingAndVisibility(
                         query, query, Plan.Visibility.PUBLIC.name(), planPageParam);
-                List<Plan> plans = planPage.getRecords();
-                log.info("Found {} plans", plans.size());
+                List<Plan> publicPlans = publicPlanPage.getRecords();
+                log.info("Found {} public plans", publicPlans.size());
+                allPlans.addAll(publicPlans);
 
-                List<SearchResponse.PlanResult> planResults = plans.stream()
+                // 2. 如果用户已登录，搜索自己的所有计划（包括私有）
+                if (currentUserId != null) {
+                    IPage<Plan> myPlanPage = planMapper.selectByUserIdAndTitleContainingOrUserIdAndDescriptionContaining(
+                            currentUserId, query, currentUserId, query, planPageParam);
+                    List<Plan> myPlans = myPlanPage.getRecords();
+                    log.info("Found {} personal plans for user {}", myPlans.size(), currentUserId);
+                    // 去重：避免公开的自己的计划重复
+                    for (Plan myPlan : myPlans) {
+                        boolean exists = allPlans.stream().anyMatch(p -> p.getId().equals(myPlan.getId()));
+                        if (!exists) {
+                            allPlans.add(myPlan);
+                        }
+                    }
+                }
+
+                log.info("Total {} plans after dedup", allPlans.size());
+
+                List<SearchResponse.PlanResult> planResults = allPlans.stream()
                         .map(p -> {
                             User planUser = getUserById(p.getUserId());
                             return SearchResponse.PlanResult.builder()

@@ -17,7 +17,15 @@ import {
   AlertTriangle,
   Plus,
   BookOpen,
-  X
+  X,
+  Database,
+  HelpCircle,
+  FileText,
+  CheckCircle,
+  Bookmark,
+  Rocket,
+  Wrench,
+  Save
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -43,6 +51,14 @@ interface DebugInfo {
   executionTrace: any[];
   toolsCalled: string[];
   sessionId: string;
+  planMetadata?: {
+    plan_summary: string;
+    api_sources: { tool: string; success: boolean; summary: string }[];
+    doc_sources: { name: string; chunks: number }[];
+    tool_success_count: number;
+    tool_total_count: number;
+    tool_fail_log: { tool: string; error: string }[];
+  };
 }
 
 const LangGraphTest = () => {
@@ -135,16 +151,102 @@ const LangGraphTest = () => {
       content: '您好！我是 LangGraph 智能助手，可以帮您处理以下任务：\n\n制定计划\n  - "帮我制定一个Python学习计划"\n  - "制定旅行计划"\n\n搜索和查询\n  - "搜索学习计划"\n  - "查询知识库关于XXX的文档"\n\n发帖和打卡\n  - "帮我发帖，内容：今天完成了健身"\n  - "我要打卡"\n\n其他问题\n  - 任何日常对话或问题\n\n请告诉我您需要什么帮助？'
     }
   ]);
-  const [sessionId, setSessionId] = useState<string>('');
+  // 多标签页隔离策略：
+  // - 每个标签页有独立的 tab_id（sessionStorage）
+  // - localStorage 存 {tab_id: session_id} 映射（持久化，关标签页再打开能恢复）
+  // - 新标签页生成新 session_id，不影响旧标签页
+  const [_tabId] = useState<string>(() => {
+    let id = sessionStorage.getItem('orchestrator_tab_id');
+    if (!id) {
+      id = 'tab_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+      sessionStorage.setItem('orchestrator_tab_id', id);
+    }
+    return id;
+  });
+
+  const [sessionId, setSessionIdState] = useState<string>(() => {
+    const saved = localStorage.getItem('orchestrator_sessions');
+    const sessions = saved ? JSON.parse(saved) : {};
+    return sessions[_tabId] || '';
+  });
+
+  const setSessionId = (id: string) => {
+    setSessionIdState(id);
+    const saved = localStorage.getItem('orchestrator_sessions');
+    const sessions = saved ? JSON.parse(saved) : {};
+    if (id) {
+      sessions[_tabId] = id;
+    } else {
+      delete sessions[_tabId];
+    }
+    localStorage.setItem('orchestrator_sessions', JSON.stringify(sessions));
+  };
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [showHistory, setShowHistory] = useState(true);
   const [conversations, setConversations] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [activeQuickAction, setActiveQuickAction] = useState<number | null>(null);
+
+  // 判断是否处于计划流程中（从 debugInfo 的 executionTrace 推断）
+  const isInPlanFlow = debugInfo?.executionTrace?.some(
+    (t: any) => ["plan_mode_confirm", "plan_generator", "plan_confirmation"].includes(t.node)
+  ) ?? false;
+
+  // 快捷功能按钮配置
+  const quickActions = [
+    {
+      label: '制定计划',
+      icon: '',
+      text: '制定计划',
+      description: '生成各类计划',
+    },
+    {
+      label: '搜索',
+      icon: '',
+      text: '搜索',
+      description: '搜索计划和帖子'
+    },
+    {
+      label: '我要打卡',
+      icon: '',
+      text: '我要打卡',
+      description: '进行今日打卡'
+    },
+    {
+      label: '发帖',
+      icon: '',
+      text: '发帖',
+      description: '发布到社区'
+    },
+    {
+      label: '知识库问答',
+      icon: '',
+      text: selectedDocIds.length > 0 
+        ? '查询知识库' 
+        : '请先在右侧选择要查询的文档',
+      description: selectedDocIds.length > 0 
+        ? '基于选中的文档问答' 
+        : '请先选中文档'
+    },
+  ];
+
+  // 快捷功能按钮点击处理
+  const handleQuickAction = (text: string, index: number) => {
+    if (isLoading) return;
+    setQuery(text);
+    setActiveQuickAction(index);
+    // 自动聚焦输入框
+    const input = document.querySelector('input[type="text"]') as HTMLInputElement;
+    if (input) input.focus();
+  };
 
   useEffect(() => {
-    loadConversations();
-    loadDocuments();
+    const init = async () => {
+      await loadConversations();
+      loadDocuments();
+    };
+    init();
   }, []);
 
   // 自动滚动到底部
@@ -351,7 +453,8 @@ const LangGraphTest = () => {
           toolsCalled: Array.isArray(data.execution_trace)
             ? data.execution_trace.flatMap((t: any) => t.tools_called || [])
             : [],
-          sessionId: data.session_id || ''
+          sessionId: data.session_id || '',
+          planMetadata: data.plan_metadata || undefined,
         });
       } else {
         throw new Error(`请求失败: ${response.status}`);
@@ -366,6 +469,28 @@ const LangGraphTest = () => {
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleCancelPlan = async () => {
+    if (!sessionId) return;
+    try {
+      const response = await fetch(`${AI_API_BASE}/orchestrator/cancel`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ session_id: sessionId }),
+      });
+      if (response.ok) {
+        const cancelMsg: Message = {
+          role: 'assistant',
+          content: '已终止当前计划流程，您可以开始新的对话。',
+          timestamp: new Date().toISOString()
+        };
+        setMessages(prev => [...prev, cancelMsg]);
+        setDebugInfo(null); // 清除调试面板，避免下次误判计划流程
+      }
+    } catch (error) {
+      console.error('Cancel plan error:', error);
     }
   };
 
@@ -421,6 +546,117 @@ const LangGraphTest = () => {
       plan_creation: <BookOpen size={16} />
     };
     return icons[intent] || <MessageSquare size={16} />;
+  };
+
+  const getNodeInfo = (nodeName: string, trace: any) => {
+    const nodes: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
+      memory_load: { label: '加载记忆', icon: <Database size={14} />, color: '#6b7280' },
+      supervisor: { label: '意图识别', icon: <Target size={14} />, color: '#6366f1' },
+      plan_mode_confirm: { label: '计划模式确认', icon: <HelpCircle size={14} />, color: '#f59e0b' },
+      plan_generator: { label: '生成计划', icon: <FileText size={14} />, color: '#10b981' },
+      plan_confirmation: { label: '确认计划', icon: <CheckCircle size={14} />, color: '#14b8a6' },
+      extract_plan_title: { label: '提取计划标题', icon: <Bookmark size={14} />, color: '#0ea5e9' },
+      create_plan_to_platform: { label: '创建到平台', icon: <Rocket size={14} />, color: '#8b5cf6' },
+      chat: { label: '日常对话', icon: <MessageSquare size={14} />, color: '#64748b' },
+      assistant: { label: '通用助手', icon: <Bot size={14} />, color: '#6366f1' },
+      rag: { label: '知识库查询', icon: <Search size={14} />, color: '#06b6d4' },
+      tool_calls: { label: '工具调用', icon: <Wrench size={14} />, color: '#f59e0b' },
+      memory_save: { label: '保存记忆', icon: <Save size={14} />, color: '#6b7280' },
+    };
+    
+    const base = nodes[nodeName] || { label: nodeName, icon: <Settings size={14} />, color: '#6b7280' };
+    
+    const details: string[] = [];
+    
+    if (trace?.intent) {
+      details.push(`意图: ${getIntentLabel(trace.intent)}`);
+    }
+    if (typeof trace?.confidence === 'number') {
+      details.push(`置信度: ${(trace.confidence * 100).toFixed(1)}%`);
+    }
+    if (trace?.selected_agent) {
+      details.push(`路由到: ${getIntentLabel(trace.selected_agent)}`);
+    }
+    if (trace?.plan_type) {
+      details.push(`计划类型: ${getIntentLabel(trace.plan_type)}`);
+    }
+    if (trace?.progress) {
+      details.push(`进度: ${trace.progress}`);
+    }
+    if (trace?.plan_generated) {
+      details.push('计划生成完成');
+    }
+    if (trace?.extracted_title) {
+      details.push(`标题: ${trace.extracted_title}`);
+    }
+    if (trace?.plan_created) {
+      details.push(`计划ID: ${trace.plan_id || '已创建'}`);
+    }
+    if (trace?.response_length) {
+      details.push(`回复长度: ${trace.response_length} 字`);
+    }
+    if (trace?.error) {
+      details.push(`错误: ${trace.error}`);
+    }
+    if (trace?.need_clarification) {
+      details.push('需要用户澄清');
+    }
+    if (trace?.waiting_for_confirmation) {
+      details.push('等待用户确认');
+    }
+    if (trace?.first_time) {
+      details.push('首次进入');
+    }
+    if (trace?.result_count !== undefined) {
+      details.push(`结果数量: ${trace.result_count}`);
+    }
+    
+    return { ...base, details };
+  };
+
+  const getToolLabel = (toolName: string) => {
+    const labels: Record<string, string> = {
+      create_plan: '创建计划',
+      create_post: '发帖',
+      search_plans: '搜索计划',
+      get_item_detail: '获取详情',
+      get_user_activity: '获取用户动态',
+      get_unchecked_plans: '获取未打卡计划',
+      check_in_plan: '打卡',
+      // 知识库相关
+      knowledge_base: '知识库检索',
+      // 天气
+      get_weather_forecast: '天气预报 (Open-Meteo)',
+      get_amap_weather: '天气详情 (高德)',
+      // 位置与路线
+      get_city_bikes: '共享单车 (CityBikes)',
+      get_open_brewery: '特色饮品店',
+      // 文化与学习
+      search_open_library: '搜索书籍 (Open Library)',
+      search_gutendex: '搜索电子书 (Gutendex)',
+      search_crossref: '搜索学术论文 (Crossref)',
+      search_poetrydb: '英文诗歌',
+      // 营养与健康
+      get_food_nutrition: '食物营养 (Open Food Facts)',
+      get_fruit_nutrition: '水果营养',
+      get_themealdb: '健康食谱 (TheMealDB)',
+      get_wger_exercises: '推荐运动',
+      calculate_bmi: 'BMI计算',
+      // 日程与节假日
+      get_china_holidays: '中国节假日',
+      get_world_time: '世界时间',
+      // 财务
+      get_exchange_rates: '汇率查询',
+      // 休闲与建议
+      get_open_trivia: '趣味知识',
+      get_bored_activity: '休闲活动',
+      get_jinrishici: '今日诗词',
+      get_hitokoto: '每日名句',
+      get_quotable_quote: '名人名言',
+      get_agify_prediction: '趣味测试',
+      get_wikipedia_summary: '百科知识',
+    };
+    return labels[toolName] || toolName;
   };
 
   return (
@@ -668,6 +904,25 @@ const LangGraphTest = () => {
 
           {/* 输入区域 */}
           <div style={styles.inputContainer}>
+            {/* 快捷功能按钮 */}
+            <div style={styles.quickButtonsContainer}>
+              {quickActions.map((action, index) => (
+                <button
+                  key={index}
+                  type="button"
+                  onClick={() => handleQuickAction(action.text, index)}
+                  disabled={isLoading}
+                  style={{
+                    ...styles.quickButton,
+                    ...(activeQuickAction === index ? styles.quickButtonActive : {}),
+                  }}
+                  title={action.description}
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+
             <form onSubmit={handleSubmit} style={{ display: 'flex', gap: '12px', width: '100%' }}>
               <input
                 type="text"
@@ -688,6 +943,32 @@ const LangGraphTest = () => {
                 <Send size={20} />
               </button>
             </form>
+
+            {/* 终止按钮 — 仅在计划流程进行中显示 */}
+            {isInPlanFlow && (
+              <button
+                type="button"
+                onClick={handleCancelPlan}
+                style={{
+                  marginTop: '8px',
+                  padding: '8px 16px',
+                  backgroundColor: '#fee2e2',
+                  color: '#dc2626',
+                  border: '1px solid #fca5a5',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: 500,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  alignSelf: 'center',
+                }}
+              >
+                <X size={16} />
+                终止当前计划
+              </button>
+            )}
           </div>
         </div>
 
@@ -753,95 +1034,219 @@ const LangGraphTest = () => {
                     </div>
                   </div>
 
-                  {/* 工具调用 */}
-                  {debugInfo.toolsCalled.length > 0 && (
+                  {/* 数据来源：API + 文档 */}
+                  {debugInfo.planMetadata && (debugInfo.planMetadata.api_sources.length > 0 || debugInfo.planMetadata.doc_sources.length > 0) && (
                     <div>
                       <h4 style={styles.debugSectionTitle}>
-                        工具调用
+                        数据来源
                       </h4>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        {debugInfo.toolsCalled.map((tool, index) => (
-                          <div
-                            key={index}
-                            style={{
-                              padding: '8px 12px',
-                              backgroundColor: '#f1f5f9',
-                              borderRadius: '6px',
-                              fontSize: '12px',
-                              fontFamily: 'monospace',
-                              color: '#475569'
-                            }}
-                          >
-                            {tool}
+
+                      {/* API 来源 */}
+                      {debugInfo.planMetadata.api_sources.length > 0 && (
+                        <div style={{ marginBottom: '12px' }}>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>
+                            API 数据 ({debugInfo.planMetadata.tool_success_count}/{debugInfo.planMetadata.tool_total_count})
                           </div>
-                        ))}
-                      </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            {debugInfo.planMetadata.api_sources.map((src: any, i: number) => (
+                              <div key={i} style={{
+                                display: 'flex', alignItems: 'center', gap: '8px',
+                                padding: '6px 10px',
+                                backgroundColor: src.success ? '#f0fdf4' : '#fef2f2',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                              }}>
+                                <span style={{ color: src.success ? '#16a34a' : '#dc2626' }}>
+                                  {src.success ? '✓' : '✗'}
+                                </span>
+                                <span style={{ fontWeight: 500, color: '#1e293b' }}>{getToolLabel(src.tool)}</span>
+                                {src.summary && (
+                                  <span style={{ color: '#64748b', fontSize: '11px' }}>— {src.summary}</span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 文档来源 */}
+                      {debugInfo.planMetadata.doc_sources.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>
+                            知识库文档
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                            {debugInfo.planMetadata.doc_sources.map((src: any, i: number) => (
+                              <div key={i} style={{
+                                display: 'flex', alignItems: 'center', gap: '8px',
+                                padding: '6px 10px',
+                                backgroundColor: '#eff6ff',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                              }}>
+                                <span style={{ color: '#2563eb' }}>📄</span>
+                                <span style={{ fontWeight: 500, color: '#1e293b' }}>{src.name}</span>
+                                <span style={{ color: '#64748b', fontSize: '11px' }}>引用 {src.chunks} 段</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 失败的工具（折叠显示） */}
+                      {debugInfo.planMetadata.tool_fail_log.length > 0 && (
+                        <details style={{ marginTop: '8px' }}>
+                          <summary style={{ fontSize: '11px', color: '#92400e', cursor: 'pointer' }}>
+                            ⚠ {debugInfo.planMetadata.tool_fail_log.length} 个工具调用失败
+                          </summary>
+                          <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                            {debugInfo.planMetadata.tool_fail_log.map((f: any, i: number) => (
+                              <div key={i} style={{
+                                padding: '4px 8px',
+                                backgroundColor: '#fef2f2',
+                                borderRadius: '4px',
+                                fontSize: '11px',
+                                color: '#991b1b',
+                              }}>
+                                {getToolLabel(f.tool)}: {f.error}
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
                     </div>
                   )}
 
-                  {/* 执行轨迹 */}
+                  {/* 执行流程 */}
                   <div>
                     <h4 style={styles.debugSectionTitle}>
-                      执行轨迹
+                      执行流程
                     </h4>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                      {debugInfo.executionTrace.map((trace: any, index: number) => (
-                        <div
-                          key={index}
-                          style={styles.debugCard}
-                        >
-                          <div style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '8px',
-                            marginBottom: '8px'
-                          }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+                      {debugInfo.executionTrace.map((trace: any, index: number) => {
+                        const nodeName = trace?.node || trace?.name || 'unknown';
+                        const nodeInfo = getNodeInfo(nodeName, trace);
+                        const isSuccess = trace?.success !== false;
+                        const isLast = index === debugInfo.executionTrace.length - 1;
+                        
+                        return (
+                          <div key={index} style={{ display: 'flex', position: 'relative' }}>
+                            {/* 时间轴竖线 */}
+                            {!isLast && (
+                              <div style={{
+                                position: 'absolute',
+                                left: '15px',
+                                top: '32px',
+                                bottom: '-8px',
+                                width: '2px',
+                                backgroundColor: isSuccess ? '#e2e8f0' : '#fecaca',
+                              }} />
+                            )}
+                            
+                            {/* 节点图标 */}
                             <div style={{
-                              width: '24px',
-                              height: '24px',
-                              backgroundColor: '#3b82f6',
-                              color: 'white',
+                              width: '32px',
+                              height: '32px',
                               borderRadius: '50%',
+                              backgroundColor: isSuccess ? nodeInfo.color : '#ef4444',
+                              color: 'white',
                               display: 'flex',
                               alignItems: 'center',
                               justifyContent: 'center',
-                              fontSize: '12px',
-                              fontWeight: 600
+                              flexShrink: 0,
+                              zIndex: 1,
+                              fontSize: '14px',
+                              fontWeight: 600,
+                              marginRight: '12px',
                             }}>
-                              {index + 1}
+                              {isSuccess ? nodeInfo.icon : '✗'}
                             </div>
-                            <span style={{ fontSize: '14px', fontWeight: 600, color: '#1e293b' }}>
-                              {trace?.node || trace?.name || 'unknown'}
-                            </span>
-                            {trace?.success !== undefined && (
-                              <span style={{
-                                marginLeft: 'auto',
-                                fontSize: '12px',
-                                color: trace.success ? '#10b981' : '#ef4444'
+                            
+                            {/* 节点内容 */}
+                            <div style={{
+                              flex: 1,
+                              marginBottom: isLast ? '0' : '12px',
+                              padding: '10px 12px',
+                              backgroundColor: isSuccess ? '#f8fafc' : '#fef2f2',
+                              borderRadius: '8px',
+                              border: `1px solid ${isSuccess ? '#e2e8f0' : '#fecaca'}`,
+                            }}>
+                              <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                marginBottom: '4px',
                               }}>
-                                {trace.success ? '✓' : '✗'}
-                              </span>
-                            )}
+                                <span style={{
+                                  fontSize: '13px',
+                                  fontWeight: 600,
+                                  color: '#1e293b',
+                                }}>
+                                  {nodeInfo.label}
+                                </span>
+                                <span style={{
+                                  fontSize: '11px',
+                                  color: isSuccess ? '#64748b' : '#dc2626',
+                                }}>
+                                  {isSuccess ? '成功' : '失败'}
+                                </span>
+                              </div>
+                              
+                              {/* 关键信息 */}
+                              {nodeInfo.details.length > 0 && (
+                                <div style={{
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '2px',
+                                  marginTop: '6px',
+                                }}>
+                                  {nodeInfo.details.map((detail: string, i: number) => (
+                                    <div key={i} style={{
+                                      fontSize: '11px',
+                                      color: '#64748b',
+                                      lineHeight: '1.4',
+                                    }}>
+                                      {detail}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              
+                              {/* 工具调用 */}
+                              {trace?.tools_called && Array.isArray(trace.tools_called) && trace.tools_called.length > 0 && (
+                                <div style={{
+                                  marginTop: '8px',
+                                  paddingTop: '8px',
+                                  borderTop: '1px dashed #e2e8f0',
+                                }}>
+                                  <div style={{
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    color: '#475569',
+                                    marginBottom: '4px',
+                                  }}>
+                                    调用工具
+                                  </div>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                    {trace.tools_called.map((tool: string, i: number) => (
+                                      <div key={i} style={{
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '6px',
+                                        fontSize: '11px',
+                                        color: '#475569',
+                                      }}>
+                                        <span style={{ color: '#10b981' }}>✓</span>
+                                        {getToolLabel(tool)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          <div style={{
-                            fontSize: '11px',
-                            color: '#64748b',
-                            marginLeft: '32px',
-                            fontFamily: 'monospace',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-all'
-                          }}>
-                            {(() => {
-                              try {
-                                const str = JSON.stringify(trace, null, 2);
-                                return str.substring(0, 500) + (str.length > 500 ? '...' : '');
-                              } catch (e) {
-                                return String(trace);
-                              }
-                            })()}
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -1165,10 +1570,36 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   inputContainer: {
     display: 'flex',
+    flexDirection: 'column' as const,
     gap: '12px',
     padding: '20px 24px',
     background: 'white',
     boxShadow: '0 -2px 4px rgba(0, 0, 0, 0.05)',
+  },
+  quickButtonsContainer: {
+    display: 'flex',
+    flexWrap: 'wrap' as const,
+    gap: '8px',
+    marginBottom: '4px',
+  },
+  quickButton: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '6px 14px',
+    border: '1px solid #1e293b',
+    borderRadius: '20px',
+    background: 'white',
+    color: '#1e293b',
+    fontSize: '13px',
+    cursor: 'pointer',
+    transition: 'all 0.2s ease',
+    whiteSpace: 'nowrap' as const,
+  },
+  quickButtonActive: {
+    background: 'rgba(30, 41, 59, 0.1)',
+    border: '1px solid rgba(30, 41, 59, 0.3)',
+    color: '#1e293b',
   },
   input: {
     flex: 1,
@@ -1185,15 +1616,15 @@ const styles: { [key: string]: React.CSSProperties } = {
     justifyContent: 'center',
     width: '48px',
     height: '48px',
-    background: '#3b82f6',
-    border: 'none',
+    background: 'white',
+    border: '1px solid #1e293b',
     borderRadius: '12px',
-    color: 'white',
+    color: '#1e293b',
     cursor: 'pointer',
     transition: 'all 0.2s ease',
   },
   sendButtonDisabled: {
-    opacity: 0.5,
+    opacity: 0.4,
     cursor: 'not-allowed',
   },
   badge: {

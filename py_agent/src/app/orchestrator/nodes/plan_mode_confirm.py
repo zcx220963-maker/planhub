@@ -4,9 +4,11 @@ Plan Mode Confirmation节点 - 确认用户是否要开启计划模式
 流程：
 1. 识别到计划相关意图时，先询问用户确认
 2. 用户回复"是"/"确认" → 开启计划流程（路由到 plan_generator）
-3. 用户回复"否" → 继续聊天（路由到 chat）
+3. 用户回复"否" → 用原始问题路由到 chat，直接回答用户的问题
 
-关键：首次进入此节点时，直接询问确认，不检查用户输入
+关键：
+- 首次进入此节点时，保存原始问题到 original_user_input
+- 用户拒绝后，把 original_user_input 放回 user_input，路由到 chat 回答
 """
 
 PLAN_TYPE_MAP = {
@@ -33,7 +35,14 @@ async def plan_mode_confirm_node(state) -> dict:
         for trace in execution_trace
     )
     
+    # 获取原始用户问题（触发计划确认的那条消息）
+    original_user_input = state.get("original_user_input", "")
+    if not original_user_input and not has_asked_before:
+        # 首次进入，保存原始问题
+        original_user_input = user_input
+    
     print(f"[DEBUG] plan_mode_confirm: has_asked_before={has_asked_before}, user_input={user_input}")
+    print(f"[DEBUG] plan_mode_confirm: original_user_input={original_user_input}")
     
     # 如果之前已经询问过，检查用户的回复
     if has_asked_before and user_input:
@@ -53,7 +62,6 @@ async def plan_mode_confirm_node(state) -> dict:
                 "plan_type": intent,
                 "waiting_for_plan_mode_confirm": False,
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_mode_confirm",
                         "action": "confirmed",
@@ -63,18 +71,23 @@ async def plan_mode_confirm_node(state) -> dict:
                 ]
             }
         elif is_reject:
+            # 用户拒绝，把原始问题保存到 chat_input，路由到 chat 直接回答
+            # 注意：不修改 user_input，保持对话历史一致性
+            print(f"[DEBUG] plan_mode_confirm: User rejected, routing to chat with original question")
             return {
-                "final_response": "好的，那我们继续聊天吧！请问有什么可以帮您的？",
-                "agent_output": "好的，那我们继续聊天吧！请问有什么可以帮您的？",
+                "intent": "chat",  # 更新意图为 chat
+                "chat_override_input": original_user_input,  # chat 节点用这个来回答
                 "selected_agent": "chat",
                 "waiting_for_plan_mode_confirm": False,
+                "original_user_input": "",  # 清空
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_mode_confirm",
                         "action": "rejected",
                         "plan_type": intent,
-                        "plan_type_name": plan_type_name
+                        "plan_type_name": plan_type_name,
+                        "original_question": original_user_input,
+                        "reason": "用户拒绝计划模式，用原始问题路由到 chat"
                     }
                 ]
             }
@@ -83,8 +96,8 @@ async def plan_mode_confirm_node(state) -> dict:
             return {
                 "agent_output": f"好的，请问您想制定{plan_type_name}吗？请回复「是」开始制定，或回复「否」继续聊天。",
                 "waiting_for_plan_mode_confirm": True,
+                "original_user_input": original_user_input,  # 保留原始问题
                 "execution_trace": [
-                    *state.get("execution_trace", []),
                     {
                         "node": "plan_mode_confirm",
                         "action": "re_ask",
@@ -97,8 +110,8 @@ async def plan_mode_confirm_node(state) -> dict:
     return {
         "agent_output": f"好的，请问您想制定{plan_type_name}吗？请回复「是」开始制定，或回复「否」继续聊天。",
         "waiting_for_plan_mode_confirm": True,
+        "original_user_input": original_user_input,  # 保存原始问题
         "execution_trace": [
-            *state.get("execution_trace", []),
             {
                 "node": "plan_mode_confirm",
                 "action": "ask",

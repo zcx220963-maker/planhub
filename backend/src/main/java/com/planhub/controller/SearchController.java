@@ -4,6 +4,7 @@ import com.planhub.dto.response.ApiResponse;
 import com.planhub.dto.response.SearchResponse;
 import com.planhub.service.SearchService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -22,8 +23,16 @@ public class SearchController {
             @RequestParam String q,
             @RequestParam(defaultValue = "all") String type,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
-        SearchResponse response = searchService.search(q, type, page, size);
+            @RequestParam(defaultValue = "10") int size,
+            Authentication authentication) {
+        Long currentUserId = null;
+        if (authentication != null && authentication.getPrincipal() != null) {
+            try {
+                currentUserId = Long.valueOf(String.valueOf(authentication.getPrincipal()));
+            } catch (Exception ignored) {
+            }
+        }
+        SearchResponse response = searchService.search(q, type, page, size, currentUserId);
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 

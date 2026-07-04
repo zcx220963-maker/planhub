@@ -541,8 +541,10 @@ const Notifications: React.FC = () => {
                             <div
                               style={{
                                 ...styles.messageBubble,
-                                backgroundColor: message.senderId === selectedConversation.otherUserId ? '#ffffff' : '#333333',
-                                color: message.senderId === selectedConversation.otherUserId ? '#0f172a' : '#ffffff',
+                                backgroundColor: message.senderId === selectedConversation.otherUserId ? '#ffffff' : 'rgba(150, 150, 150, 0.2)',
+                                color: message.senderId === selectedConversation.otherUserId ? '#0f172a' : '#000000',
+                                border: message.senderId === selectedConversation.otherUserId ? '1px solid #e2e8f0' : '1px solid #000000',
+                                borderBottomRightRadius: message.senderId === selectedConversation.otherUserId ? '16px' : '4px',
                               }}
                             >
                               {message.content && <p style={styles.messageText}>{message.content}</p>}
@@ -553,7 +555,6 @@ const Notifications: React.FC = () => {
                                   style={styles.sharedContent}
                                   onClick={() => navigate(`/plan/${message.sharedPlanId}`)}
                                 >
-                                  <div style={styles.sharedIcon}>📋</div>
                                   <div style={styles.sharedInfo}>
                                     <span style={styles.sharedTitle}>{message.sharedPlan.title}</span>
                                     {message.sharedPlan.description && (
@@ -573,7 +574,6 @@ const Notifications: React.FC = () => {
                                   style={styles.sharedContent}
                                   onClick={() => navigate(`/post/${message.sharedPostId}`)}
                                 >
-                                  <div style={styles.sharedIcon}>💬</div>
                                   <div style={styles.sharedInfo}>
                                     <span style={styles.sharedTitle}>
                                       {message.sharedPost.content.length > 30 

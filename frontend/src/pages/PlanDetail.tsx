@@ -326,7 +326,7 @@ const PlanDetail: React.FC = () => {
         </div>
 
         {plan.description && (
-          <p style={styles.planDescription}>{plan.description}</p>
+          <div style={styles.planDescription}>{plan.description}</div>
         )}
 
         {/* 用户信息 */}
@@ -770,11 +770,13 @@ const styles: { [key: string]: React.CSSProperties } = {
   planDescription: {
     fontSize: '16px',
     color: '#64748b',
-    lineHeight: '1.6',
+    lineHeight: '1.8',
     marginBottom: '24px',
     background: 'white',
     padding: '20px 24px',
     borderRadius: '12px',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
   },
   userInfo: {
     display: 'flex',

@@ -50,7 +50,8 @@ const CommentItem: React.FC<CommentItemProps> = ({
   const commentDisplayName = comment.user?.displayName || comment.user?.username || `用户${comment.userId}`;
   const commentAvatarUrl = getAvatarUrl(comment.user?.avatarUrl);
   const commentImages = parseMediaUrls(comment.mediaUrls);
-  const hasReplies = comment.replies && comment.replies.length > 0;
+  const replyCount = comment.replies?.length || 0;
+  const hasReplies = replyCount > 0;
   const canDelete = comment.userId === currentUserId || postAuthorId === currentUserId;
   const isTopLevel = level === 0;
 
@@ -61,17 +62,10 @@ const CommentItem: React.FC<CommentItemProps> = ({
   };
 
   const handleReplyClick = () => {
-    // 如果有子评论并且是顶层评论，先展开/收起
-    if (hasReplies && isTopLevel) {
+    if (hasReplies) {
       setExpanded(!expanded);
     }
-    // 同时也触发回复
     onReply(comment.id, commentDisplayName);
-  };
-
-  const handleToggleExpand = (e: React.MouseEvent) => {
-    e.stopPropagation(); // 阻止触发回复
-    setExpanded(!expanded);
   };
 
   return (
@@ -126,17 +120,6 @@ const CommentItem: React.FC<CommentItemProps> = ({
               <Heart size={14} fill={comment.liked ? '#ef4444' : 'none'} />
               <span>{comment.likeCount || 0}</span>
             </button>
-            {hasReplies && isTopLevel && (
-              <button
-                style={{
-                  ...styles.commentActionButton,
-                  color: '#64748b',
-                }}
-                onClick={handleToggleExpand}
-              >
-                {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              </button>
-            )}
             <button
               style={{
                 ...styles.commentActionButton,
@@ -145,7 +128,10 @@ const CommentItem: React.FC<CommentItemProps> = ({
               onClick={handleReplyClick}
             >
               <MessageCircle size={14} />
-              <span>回复 ({comment.replyCount || 0})</span>
+              <span>回复 ({replyCount})</span>
+              {hasReplies && (
+                expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />
+              )}
             </button>
             {canDelete && (
               <button
@@ -185,28 +171,113 @@ const CommentItem: React.FC<CommentItemProps> = ({
           )}
         </div>
       </div>
-      {hasReplies && (isTopLevel ? expanded : true) && (
-        <div style={{ paddingLeft: `${40 + level * 12}px` }}>
+      {isTopLevel && hasReplies && expanded && (
+        <div style={{ paddingLeft: '40px' }}>
           {comment.replies.map((reply) => (
-            <CommentItem 
-              key={reply.id}
-              comment={reply}
-              postId={postId}
-              postAuthorId={postAuthorId}
-              currentUserId={currentUserId}
-              onLike={onLike}
-              onReply={onReply}
-              onDelete={onDelete}
-              onSubmitComment={onSubmitComment}
-              isReplying={replyingToCommentId === reply.id}
-              newCommentText={newCommentText}
-              onCommentChange={onCommentChange}
-              navigate={navigate}
-              getAvatarUrl={getAvatarUrl}
-              parseMediaUrls={parseMediaUrls}
-              replyingToCommentId={replyingToCommentId}
-              level={level + 1}
-            />
+            <div key={reply.id} style={styles.replyItem}>
+              <div style={styles.commentItem}>
+                <div 
+                  style={{
+                    ...styles.userAvatarSmall,
+                    ...(getAvatarUrl(reply.user?.avatarUrl) ? {
+                      backgroundImage: `url(${getAvatarUrl(reply.user?.avatarUrl)})`,
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                    } : {})
+                  }} 
+                  onClick={() => navigate(`/user/${reply.userId}`)}
+                >
+                  {!getAvatarUrl(reply.user?.avatarUrl) && (reply.user?.displayName?.charAt(0) || reply.user?.username?.charAt(0) || 'U').toUpperCase()}
+                </div>
+                <div style={styles.commentContent}>
+                  <span 
+                    style={styles.commentUserName}
+                    onClick={() => navigate(`/user/${reply.userId}`)}
+                  >
+                    {reply.user?.displayName || reply.user?.username || `用户${reply.userId}`}
+                  </span>
+                  <span style={styles.commentText}>{reply.content}</span>
+                  
+                  {parseMediaUrls(reply.mediaUrls).length > 0 && (
+                    <div style={styles.commentImagesContainer}>
+                      {parseMediaUrls(reply.mediaUrls).map((url, index) => (
+                        <img
+                          key={index}
+                          src={getImageUrl(url)}
+                          style={styles.commentImage}
+                          alt={`评论图片 ${index + 1}`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  
+                  <span style={styles.commentTime}>
+                    {new Date(reply.createdAt).toLocaleString('zh-CN')}
+                  </span>
+                  <div style={styles.commentActions}>
+                    <button
+                      style={{
+                        ...styles.commentActionButton,
+                        color: reply.liked ? '#ef4444' : '#64748b',
+                      }}
+                      onClick={() => onLike(reply.id)}
+                    >
+                      <Heart size={14} fill={reply.liked ? '#ef4444' : 'none'} />
+                      <span>{reply.likeCount || 0}</span>
+                    </button>
+                    <button
+                      style={{
+                        ...styles.commentActionButton,
+                        color: replyingToCommentId === reply.id ? '#000000' : '#64748b',
+                      }}
+                      onClick={() => onReply(reply.id, reply.user?.displayName || reply.user?.username || `用户${reply.userId}`)}
+                    >
+                      <MessageCircle size={14} />
+                      <span>回复</span>
+                    </button>
+                    {(reply.userId === currentUserId || postAuthorId === currentUserId) && (
+                      <button
+                        style={{
+                          ...styles.commentActionButton,
+                          color: '#ef4444',
+                        }}
+                        onClick={() => {
+                          if (window.confirm('确定要删除这条评论吗？')) {
+                            onDelete(reply.id);
+                          }
+                        }}
+                      >
+                        <Trash2 size={14} />
+                        <span>删除</span>
+                      </button>
+                    )}
+                  </div>
+                  
+                  {replyingToCommentId === reply.id && (
+                    <div style={styles.replyInputWrapper}>
+                      <input
+                        type="text"
+                        placeholder={`回复 @${reply.user?.displayName || reply.user?.username || '用户'}...`}
+                        style={styles.replyInput}
+                        value={newCommentText}
+                        onChange={(e) => onCommentChange(e.target.value)}
+                        onKeyPress={(e) => {
+                          if (e.key === 'Enter') {
+                            onSubmitComment();
+                          }
+                        }}
+                      />
+                      <button 
+                        style={styles.replySubmitButton}
+                        onClick={onSubmitComment}
+                      >
+                        <MessageCircle size={14} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           ))}
         </div>
       )}
@@ -218,6 +289,9 @@ const styles: { [key: string]: React.CSSProperties } = {
   commentItem: {
     display: 'flex',
     gap: '12px',
+  },
+  replyItem: {
+    marginTop: '12px',
   },
   userAvatarSmall: {
     width: '32px',
