@@ -1,14 +1,10 @@
 package com.planhub.controller;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.planhub.config.AiServiceConfig;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.core.io.Resource;
 import org.springframework.http.*;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.*;
@@ -17,16 +13,13 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import reactor.core.publisher.Flux;
 
 import jakarta.servlet.http.HttpServletRequest;
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * AI 服务转发控制器（安全网关）
@@ -46,8 +39,8 @@ import java.util.stream.Collectors;
 public class AIController {
 
     private final RestTemplate aiRestTemplate;
+    private final WebClient aiWebClient;
     private final AiServiceConfig aiServiceConfig;
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
      * 构建内部请求的 Header，包含用户的 JWT Authorization
@@ -235,137 +228,61 @@ public class AIController {
 
     // ============ 对话机器人 (Chat) ============
 
+    /**
+     * 对话机器人 — SSE 流式透传（WebClient + Flux 响应式实现）
+     *
+     * 优势：
+     * - 非阻塞：不占用 Servlet 线程，Netty EventLoop 处理 IO
+     * - 自动感知客户端断开：Flux cancel 信号立即中断 Python 连接
+     * - 背压支持：客户端消费慢时自动降速
+     * - 代码简洁：无需手动管理 HttpURLConnection / SecurityContext
+     */
     @PostMapping("/chat/stream")
-    public ResponseEntity<StreamingResponseBody> chatStream(
+    public ResponseEntity<Flux<byte[]>> chatStream(
             @RequestBody Map<String, Object> body,
             Authentication authentication,
             HttpServletRequest request) {
 
-        String url = aiServiceConfig.getAiServiceUrl() + "/chat/stream";
         String userId = getCurrentUserId(authentication);
         String jwtToken = extractJwtToken(request);
         body.putIfAbsent("user_id", userId);
-        String jsonBody;
-        try {
-            jsonBody = objectMapper.writeValueAsString(body);
-        } catch (Exception e) {
-            log.error("JSON 序列化失败: {}", e.getMessage());
-            return buildSseError("抱歉，请求参数处理失败，请稍后重试。");
-        }
 
-        log.debug("转发流式对话: userId={}", userId);
-
-        // 捕获当前 SecurityContext（ThreadLocal），在异步线程中显式恢复，
-        // 否则 Spring Security 的异步分发检查会抛出 AccessDeniedException
-        SecurityContext capturedContext = SecurityContextHolder.getContext();
         String secretHeader = aiServiceConfig.getInternalSecretHeader();
         String secretValue = aiServiceConfig.getInternalSecret();
 
-        StreamingResponseBody stream = outputStream -> {
-            // 关键：在异步线程显式恢复 SecurityContext
-            if (capturedContext != null) {
-                SecurityContextHolder.setContext(capturedContext);
-            }
+        log.debug("转发流式对话 (WebClient): userId={}", userId);
 
-            HttpURLConnection conn = null;
-            try {
-                java.net.URL targetUrl = new java.net.URL(url);
-                conn = (HttpURLConnection) targetUrl.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setDoInput(true);
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(300000);
-                conn.setUseCaches(false);
+        Flux<byte[]> flux = aiWebClient.post()
+                .uri("/chat/stream")
+                .header(secretHeader, secretValue)
+                .header("Authorization", "Bearer " + jwtToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToFlux(String.class)
+                .map(line -> (line + "\n").getBytes(StandardCharsets.UTF_8))
+                .onErrorResume(WebClientResponseException.class, e -> {
+                    log.error("AI 服务返回错误: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+                    return Flux.just(sseErrorMessage("AI 服务错误: " + e.getStatusCode()));
+                })
+                .onErrorResume(Exception.class, e -> {
+                    log.error("SSE 流转发异常: {}", e.getMessage());
+                    return Flux.just(sseErrorMessage("抱歉，AI 服务暂时不可用，请稍后重试。"));
+                });
 
-                // 设置请求头 - 带内部密钥
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty(secretHeader, secretValue);
-                if (jwtToken != null && !jwtToken.isEmpty()) {
-                    conn.setRequestProperty("Authorization", "Bearer " + jwtToken);
-                }
-
-                // 发送请求体
-                try (java.io.OutputStream os = conn.getOutputStream()) {
-                    os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                }
-
-                // 检查响应状态
-                int status = conn.getResponseCode();
-                log.debug("Python AI 服务响应状态: {}", status);
-
-                // 选择输入流（200-299 用 getInputStream，否则 getErrorStream）
-                InputStream is = (status >= 200 && status < 300) ? conn.getInputStream() : conn.getErrorStream();
-                if (is == null) {
-                    log.error("Python AI 服务无响应流，status={}", status);
-                    writeSseMessage(outputStream, "抱歉，AI 服务无响应，请稍后重试。");
-                    return;
-                }
-
-                // 真正的逐行 SSE 转发
-                try (InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8);
-                     BufferedReader br = new BufferedReader(isr)) {
-
-                    String line;
-                    boolean gotAnyData = false;
-                    while ((line = br.readLine()) != null) {
-                        if (line.startsWith("data:")) {
-                            gotAnyData = true;
-                            outputStream.write((line + "\n\n").getBytes(StandardCharsets.UTF_8));
-                            outputStream.flush();
-                        }
-                    }
-
-                    if (!gotAnyData) {
-                        log.warn("Python AI 服务未返回任何 SSE data 行");
-                        writeSseMessage(outputStream, "AI 服务未返回有效内容，请稍后重试。");
-                    }
-                }
-
-            } catch (java.net.ConnectException ce) {
-                log.error("无法连接到 Python AI 服务({}): {}", url, ce.getMessage());
-                writeSseMessage(outputStream, "抱歉，AI 服务未启动，请联系管理员。");
-            } catch (java.net.SocketTimeoutException te) {
-                log.error("连接 Python AI 服务超时: {}", te.getMessage());
-                writeSseMessage(outputStream, "抱歉，AI 服务响应超时，请稍后重试。");
-            } catch (Exception e) {
-                log.error("SSE 流转发异常: {}", e.getMessage(), e);
-                writeSseMessage(outputStream, "抱歉，发生了错误，请稍后重试。");
-            } finally {
-                // 清理异步线程的 SecurityContext（避免内存泄漏）
-                SecurityContextHolder.clearContext();
-                if (conn != null) {
-                    try {
-                        conn.disconnect();
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        };
-
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.TEXT_EVENT_STREAM);
-        responseHeaders.setCacheControl(CacheControl.noCache());
-        responseHeaders.setConnection("keep-alive");
-        responseHeaders.set("X-Accel-Buffering", "no");
-
-        return new ResponseEntity<>(stream, responseHeaders, HttpStatus.OK);
+        return ResponseEntity.ok()
+                .contentType(MediaType.TEXT_EVENT_STREAM)
+                .cacheControl(CacheControl.noCache())
+                .header("X-Accel-Buffering", "no")
+                .header("Connection", "keep-alive")
+                .body(flux);
     }
 
     // ---- SSE 工具方法 ----
-    private ResponseEntity<StreamingResponseBody> buildSseError(String message) {
-        StreamingResponseBody errorStream = outputStream -> writeSseMessage(outputStream, message);
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.TEXT_EVENT_STREAM);
-        responseHeaders.setCacheControl(CacheControl.noCache());
-        return new ResponseEntity<>(errorStream, responseHeaders, HttpStatus.OK);
-    }
-
-    private void writeSseMessage(java.io.OutputStream outputStream, String content) throws java.io.IOException {
-        String data = "data: {\"content\": \"" + content + "\", \"done\": true}\n\ndata: [DONE]\n\n";
-        outputStream.write(data.getBytes(StandardCharsets.UTF_8));
-        outputStream.flush();
+    private byte[] sseErrorMessage(String message) {
+        return String.format("data: {\"content\": \"%s\", \"done\": true}\n\ndata: [DONE]\n\n", message)
+                .getBytes(StandardCharsets.UTF_8);
     }
 
     @PostMapping("/chat/chat")
@@ -604,113 +521,49 @@ public class AIController {
         return forwardJsonPost("/orchestrator/chat", body, authentication, request);
     }
 
+    /**
+     * LangGraph 编排 — SSE 流式透传（WebClient + Flux）
+     */
     @PostMapping("/orchestrator/stream")
-    public ResponseEntity<StreamingResponseBody> orchestrateStream(
+    public ResponseEntity<Flux<byte[]>> orchestrateStream(
             @RequestBody Map<String, Object> body,
             Authentication authentication,
             HttpServletRequest request) {
 
-        String url = aiServiceConfig.getAiServiceUrl() + "/orchestrator/stream";
         String userId = getCurrentUserId(authentication);
         String jwtToken = extractJwtToken(request);
         body.putIfAbsent("user_id", userId);
-        String jsonBody;
-        try {
-            jsonBody = objectMapper.writeValueAsString(body);
-        } catch (Exception e) {
-            log.error("JSON 序列化失败: {}", e.getMessage());
-            return buildSseError("抱歉，请求参数处理失败，请稍后重试。");
-        }
 
-        log.debug("转发 LangGraph 流式编排: userId={}", userId);
-
-        SecurityContext capturedContext = SecurityContextHolder.getContext();
         String secretHeader = aiServiceConfig.getInternalSecretHeader();
         String secretValue = aiServiceConfig.getInternalSecret();
 
-        StreamingResponseBody stream = outputStream -> {
-            if (capturedContext != null) {
-                SecurityContextHolder.setContext(capturedContext);
-            }
+        log.debug("转发 LangGraph 流式编排 (WebClient): userId={}", userId);
 
-            HttpURLConnection conn = null;
-            try {
-                java.net.URL targetUrl = new java.net.URL(url);
-                conn = (HttpURLConnection) targetUrl.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-                conn.setDoInput(true);
-                conn.setConnectTimeout(5000);
-                conn.setReadTimeout(300000);
-                conn.setUseCaches(false);
+        Flux<byte[]> flux = aiWebClient.post()
+                .uri("/orchestrator/stream")
+                .header(secretHeader, secretValue)
+                .header("Authorization", "Bearer " + jwtToken)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToFlux(String.class)
+                .map(line -> (line + "\n").getBytes(StandardCharsets.UTF_8))
+                .onErrorResume(WebClientResponseException.class, e -> {
+                    log.error("LangGraph 编排服务返回错误: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
+                    return Flux.just(sseErrorMessage("AI 编排服务错误: " + e.getStatusCode()));
+                })
+                .onErrorResume(Exception.class, e -> {
+                    log.error("LangGraph 流式编排异常: {}", e.getMessage());
+                    return Flux.just(sseErrorMessage("抱歉，AI 编排服务暂时不可用，请稍后重试。"));
+                });
 
-                conn.setRequestProperty("Content-Type", "application/json");
-                conn.setRequestProperty(secretHeader, secretValue);
-                if (jwtToken != null && !jwtToken.isEmpty()) {
-                    conn.setRequestProperty("Authorization", "Bearer " + jwtToken);
-                }
-
-                try (java.io.OutputStream os = conn.getOutputStream()) {
-                    os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
-                    os.flush();
-                }
-
-                int status = conn.getResponseCode();
-                log.debug("LangGraph 编排服务响应状态: {}", status);
-
-                InputStream is = (status >= 200 && status < 300) ? conn.getInputStream() : conn.getErrorStream();
-                if (is == null) {
-                    log.error("LangGraph 编排服务无响应流，status={}", status);
-                    writeSseMessage(outputStream, "抱歉，AI 编排服务无响应，请稍后重试。");
-                    return;
-                }
-
-                try (InputStreamReader isr = new InputStreamReader(is, StandardCharsets.UTF_8);
-                     BufferedReader br = new BufferedReader(isr)) {
-
-                    String line;
-                    boolean gotAnyData = false;
-                    while ((line = br.readLine()) != null) {
-                        if (line.startsWith("data:")) {
-                            gotAnyData = true;
-                            outputStream.write((line + "\n\n").getBytes(StandardCharsets.UTF_8));
-                            outputStream.flush();
-                        }
-                    }
-
-                    if (!gotAnyData) {
-                        log.warn("LangGraph 编排服务未返回任何 SSE data 行");
-                        writeSseMessage(outputStream, "AI 编排服务未返回有效内容，请稍后重试。");
-                    }
-                }
-
-            } catch (java.net.ConnectException ce) {
-                log.error("无法连接到 LangGraph 编排服务({}): {}", url, ce.getMessage());
-                writeSseMessage(outputStream, "抱歉，AI 编排服务未启动，请联系管理员。");
-            } catch (java.net.SocketTimeoutException te) {
-                log.error("连接 LangGraph 编排服务超时: {}", te.getMessage());
-                writeSseMessage(outputStream, "抱歉，AI 编排服务响应超时，请稍后重试。");
-            } catch (Exception e) {
-                log.error("LangGraph 流式编排异常: {}", e.getMessage(), e);
-                writeSseMessage(outputStream, "抱歉，发生了错误，请稍后重试。");
-            } finally {
-                SecurityContextHolder.clearContext();
-                if (conn != null) {
-                    try {
-                        conn.disconnect();
-                    } catch (Exception ignored) {
-                    }
-                }
-            }
-        };
-
-        HttpHeaders responseHeaders = new HttpHeaders();
-        responseHeaders.setContentType(MediaType.TEXT_EVENT_STREAM);
-        responseHeaders.setCacheControl(CacheControl.noCache());
-        responseHeaders.setConnection("keep-alive");
-        responseHeaders.set("X-Accel-Buffering", "no");
-
-        return new ResponseEntity<>(stream, responseHeaders, HttpStatus.OK);
+        return ResponseEntity.ok()
+                .contentType(MediaType.TEXT_EVENT_STREAM)
+                .cacheControl(CacheControl.noCache())
+                .header("X-Accel-Buffering", "no")
+                .header("Connection", "keep-alive")
+                .body(flux);
     }
 
     @GetMapping("/orchestrator/health")
