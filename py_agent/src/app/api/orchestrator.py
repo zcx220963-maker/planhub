@@ -11,7 +11,7 @@ LangGraph多Agent编排API
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, validator
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 import json
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
