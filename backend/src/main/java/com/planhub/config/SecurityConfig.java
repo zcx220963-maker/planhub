@@ -44,16 +44,58 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // 公开接口：认证相关
                 .requestMatchers("/api/auth/login", "/api/auth/register", "/api/auth/refresh").permitAll()
+                // 公开接口：用户注册/登录时的测试端点
+                .requestMatchers("/api/auth/register/test").permitAll()
+
+                // 用户接口：写操作需要认证， GET /page 公开（列表展示）
+                .requestMatchers("/api/users/*/follow/**").authenticated()
+                .requestMatchers("/api/users/*/change-password").authenticated()
+                .requestMatchers("/api/users/*/avatar").authenticated()
+                .requestMatchers("/api/users/*/privacy-settings").authenticated()
+                .requestMatchers(org.springframework.http.HttpMethod.PUT, "/api/users/*").authenticated()
+                .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/users/*").authenticated()
                 .requestMatchers("/api/users/**").permitAll()
+
+                // 帖子/计划：写操作需要认证，读操作部分公开
+                .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/posts/**").authenticated()
+                .requestMatchers(org.springframework.http.HttpMethod.PUT, "/api/posts/**").authenticated()
+                .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/posts/**").authenticated()
                 .requestMatchers("/api/posts/**").permitAll()
-                .requestMatchers("/api/activities/**").permitAll()
+
+                .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/plans/**").authenticated()
+                .requestMatchers(org.springframework.http.HttpMethod.PUT, "/api/plans/**").authenticated()
+                .requestMatchers(org.springframework.http.HttpMethod.DELETE, "/api/plans/**").authenticated()
                 .requestMatchers("/api/plans/**").permitAll()
+
+                // 活动：需要认证
+                .requestMatchers("/api/activities/**").authenticated()
+
+                // 消息通知：需要认证
+                .requestMatchers("/api/notifications/**").authenticated()
+
+                // 搜索：公开（前端首页展示需要）
                 .requestMatchers("/api/search/**").permitAll()
-                .requestMatchers("/api/chat/**").permitAll()
-                .requestMatchers("/api/ai/**").permitAll()
-                .requestMatchers("/api/notifications/**").permitAll()
+                // 但搜索同步话题需要认证（管理员功能）
+                .requestMatchers("/api/search/sync-topics").authenticated()
+
+                // 聊天：需要认证
+                .requestMatchers("/api/chat/**").authenticated()
+
+                // AI 服务：需要认证
+                .requestMatchers("/api/ai/**").authenticated()
+
+                // 文件上传：需要认证
+                .requestMatchers("/api/upload/**").authenticated()
+
+                // 静态上传文件：公开（用于展示图片）
                 .requestMatchers("/uploads/**").permitAll()
+
+                // AI 健康检查：公开（不泄露敏感信息）
+                .requestMatchers("/api/ai/health", "/api/ai/orchestrator/health", "/api/ai/assistant/health").permitAll()
+
+                // 其余接口默认需要认证
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
