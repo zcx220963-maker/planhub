@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.planhub.mapper.PostCommentMapper">
+
+    <select id="selectByPostId" resultType="com.planhub.entity.PostComment">
+        SELECT * FROM post_comments
+        WHERE post_id = #{postId}
+        ORDER BY created_at DESC
+    </select>
+
+    <select id="selectByPostIdAndParentCommentId" resultType="com.planhub.entity.PostComment">
+        SELECT * FROM post_comments
+        WHERE post_id = #{postId}
+        <if test="parentCommentId != null">
+            AND parent_comment_id = #{parentCommentId}
+        </if>
+        ORDER BY created_at DESC
+    </select>
+
+</mapper>

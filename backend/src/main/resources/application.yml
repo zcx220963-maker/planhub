@@ -1,0 +1,66 @@
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: planhub-backend
+
+  # 文件上传大小限制（RAG 文档上传）
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/planhub?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:1234}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.MySQLDialect
+
+jwt:
+  secret: ${JWT_SECRET:planhub-default-dev-secret-change-in-production-please-32-byte-min}
+  access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:3600000}
+  refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:86400000}
+
+ai:
+  service:
+    url: ${AI_SERVICE_URL:http://127.0.0.1:8000}
+    internal-secret: ${AI_INTERNAL_SECRET:planhub-internal-secret-change-in-production}
+    internal-secret-header: ${AI_INTERNAL_SECRET_HEADER:X-Internal-Api-Secret}
+    connect-timeout: ${AI_CONNECT_TIMEOUT:5000}
+    read-timeout: ${AI_READ_TIMEOUT:300000}
+
+logging:
+  level:
+    com.planhub: DEBUG
+    org.springframework.security: WARN
+    com.alibaba.nacos: WARN
+    org.springframework.cloud.bootstrap: WARN
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.planhub.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+
+# 功能特性开关
+features:
+  rag-enabled: true
+  ai-assistant-enabled: true
+  chat-bot-enabled: true

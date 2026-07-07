@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.planhub.mapper.CommentInteractionMapper">
+
+    <select id="findByUserIdAndCommentIdIn" resultType="com.planhub.entity.CommentInteraction">
+        SELECT * FROM comment_interactions
+        WHERE user_id = #{userId}
+        <if test="commentIds != null and commentIds.size() > 0">
+            AND comment_id IN
+            <foreach collection="commentIds" item="commentId" open="(" separator="," close=")">
+                #{commentId}
+            </foreach>
+        </if>
+    </select>
+
+</mapper>
