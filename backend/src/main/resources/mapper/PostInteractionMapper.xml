@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.planhub.mapper.PostInteractionMapper">
+
+    <select id="findByUserIdAndPostIdInAndInteractionType" resultType="com.planhub.entity.PostInteraction">
+        SELECT * FROM post_interactions
+        WHERE user_id = #{userId}
+        AND post_id IN
+        <foreach collection="postIds" item="postId" open="(" separator="," close=")">
+            #{postId}
+        </foreach>
+        AND interaction_type = #{interactionType}
+    </select>
+
+</mapper>
