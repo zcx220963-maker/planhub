@@ -45,8 +45,7 @@ class AgentState(TypedDict):
     # ===== 记忆 =====
     short_term_memory: List[BaseMessage]
     user_preference: Optional[str]
-    long_term_memory: List[str]              # 长期记忆（从 Chroma 向量库检索的 top-K 记忆）
-    processed_user_input: Optional[str]      # LLM 预处理后的用户输入（用于检索匹配）
+    working_memory: Optional[Dict[str, Any]]
 
     # ===== 协调 =====
     handoff_reason: Optional[str]

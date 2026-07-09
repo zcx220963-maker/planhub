@@ -438,32 +438,10 @@ aiApi.interceptors.response.use(
   }
 );
 
-// agentApi —— AI 对话助手（经 Java 网关转发到 Python AI 服务）
-// 前端统一使用 agentApi，JAVA 后端负责 JWT 鉴权 + 内部密钥转发
-export const agentApi = {
-  chat: async (
-    message: string,
-    sessionId?: string,
-    useRag?: boolean,
-    usePlanMode?: boolean,
-    userId?: string,
-    docIds?: number[]
-  ): Promise<{ response: string; intent?: string; trace?: any[]; session_id: string; blocked_by_capability?: boolean; handoff_reason?: string }> => {
-    // 请求 Java 网关: POST http://localhost:8080/api/ai/orchestrator/chat
-    // 使用 LangGraph 编排入口（supervisor → plan_generator → plan_confirmation）
-    const response = await api.post('/ai/orchestrator/chat', {
-      message,
-      session_id: sessionId,
-      user_id: userId,
-      use_rag: useRag,
-      use_plan_mode: usePlanMode,
-      doc_ids: docIds
-    });
-    return response.data;
-  },
-
-  resetSession: async (sessionId?: string): Promise<{ success: boolean }> => {
-    const response = await api.post('/ai/reset', { session_id: sessionId });
+export const planAssistantApi = {
+  chat: async (message: string, sessionId?: string): Promise<{ response: string; session_id: string }> => {
+    // 请求 Java 网关: POST http://localhost:8080/api/ai/chat
+    const response = await api.post('/ai/chat', { message, session_id: sessionId });
     return response.data;
   },
 
@@ -473,14 +451,13 @@ export const agentApi = {
   },
 
   queryRAG: async (query: string, sessionId?: string, userId?: string, docIds?: number[]): Promise<{ response: string; sources: any[] }> => {
-    const response = await api.post('/ai/rag/query',
-      {
-        query,
-        session_id: sessionId || undefined,
-        user_id: userId || "default",
-        top_k: 3,
-        doc_ids: docIds && docIds.length > 0 ? docIds : undefined
-      });
+    const response = await api.post('/ai/rag/query', { 
+      query, 
+      session_id: sessionId || undefined, 
+      user_id: userId || "default",
+      top_k: 3,
+      doc_ids: docIds && docIds.length > 0 ? docIds : undefined
+    });
     return response.data;
   },
 
@@ -504,9 +481,6 @@ export const agentApi = {
     return response.data;
   },
 };
-
-// 保留 planAssistantApi 别名（向后兼容）
-export const planAssistantApi = agentApi;
 
 export const chatApi = {
   getConversations: async (): Promise<ChatConversation[]> => {

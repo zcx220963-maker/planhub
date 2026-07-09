@@ -110,8 +110,8 @@ async def create_plan_to_platform_node(state) -> dict:
     duration = plan_info.get("duration") or plan_info.get("days")
     if duration:
         try:
-            from app.common.utils import parse_duration
-            total_days = parse_duration(duration)
+            from app.skills.plan_templates import _parse_duration
+            total_days = _parse_duration(duration)
             if total_days and total_days > 0:
                 from datetime import date, timedelta
                 start_date = date.today()
@@ -164,24 +164,20 @@ async def create_plan_to_platform_node(state) -> dict:
             target_date=date_info["target_date"]
         )
 
-        # 记忆透传
-        short_term = state.get("short_term_memory", [])
-        long_term = state.get("long_term_memory", [])
-
         # 检查是否成功
         if "成功" in result or "创建成功" in result:
             return {
                 "final_response": f" {result}",
                 "agent_output": f" {result}",
                 "tools_called": ["create_plan"],
-                "user_confirmed_create": True,
-                "execution_trace": [
-                    {
-                        "node": "create_plan_to_platform",
-                        "plan_title": plan_title,
-                        "success": True
-                    }
-                ]
+                # 清空所有计划创建相关状态，防止下次路由又回到 plan_confirmation
+                "waiting_for_plan_confirmation": False,
+                "waiting_for_plan_mode_confirm": False,
+                "plan_text_cache": None,
+                "plan_title": None,
+                "plan_type": None,
+                "user_confirmed_create": False,
+                "execution_trace": []
             }
         else:
             # 创建失败
@@ -203,8 +199,6 @@ async def create_plan_to_platform_node(state) -> dict:
             "final_response": f"计划创建失败：{str(e)}\n\n您可以手动复制以下计划内容到平台：\n\n{plan_text[:500]}...",
             "agent_output": f"计划创建失败：{str(e)}",
             "error": str(e),
-            "short_term_memory": state.get("short_term_memory", []),
-            "long_term_memory": state.get("long_term_memory", []),
             "execution_trace": [
                 {
                     "node": "create_plan_to_platform",

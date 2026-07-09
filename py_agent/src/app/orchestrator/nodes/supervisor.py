@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from src.app.common.llm_factory import get_llm
 from ..schemas import IntentResult
 
-INTENT_CLASSIFICATION_PROMPT = """你是一个意图分类器，根据用户输入判断其意图类别。请以 JSON 格式返回结果。
+INTENT_CLASSIFICATION_PROMPT = """你是一个意图分类器，根据用户输入判断其意图类别。
 
 意图类别（简化版）：
 1. plan_creation - 计划创建相关（任何涉及规划、安排、计划的意图）
@@ -36,7 +36,7 @@ INTENT_CLASSIFICATION_PROMPT = """你是一个意图分类器，根据用户输�
 - 不要区分具体是学习/健康/旅行等类型，统一识别为 plan_creation
 - 后续由 plan_generator 通过对话了解具体需求
 
-请只返回意图类别名称和置信度的 JSON 对象。
+请只返回意图类别名称和置信度。
 """
 
 
@@ -119,119 +119,14 @@ async def supervisor_node(state) -> dict:
     """
     
     execution_trace = state.get("execution_trace", [])
-    user_input = state.get("user_input", "").strip()
     print(f"[DEBUG] supervisor: execution_trace length = {len(execution_trace)}")
-
-    # —— 记忆透传：LangGraph 中如果一个节点返回的 dict 没有某个字段，该字段会被重置为默认值。
-    #     因此每个节点的返回值都必须带上 short_term_memory / long_term_memory，一路传到消费节点。
-    short_term = state.get("short_term_memory", [])
-    long_term = state.get("long_term_memory", [])
-
-    def _with_memory(d: dict) -> dict:
-        """合并 memory 字段到返回字典，避免后续节点丢失短期/长期记忆。"""
-        d.setdefault("short_term_memory", short_term)
-        d.setdefault("long_term_memory", long_term)
-        return d
-
-    # ===== 最高优先级：前端点击「确认」超链接发送的特殊指令 =====
-    # 检查当前是否正在等待确认的流程中
-    _has_plan_ask = any(
-        t.get("node") == "plan_mode_confirm" and t.get("action") == "ask"
-        for t in execution_trace
-    )
-    _has_plan_generator = any(
-        t.get("node") == "plan_generator" and t.get("collecting_info")
-        for t in execution_trace
-    )
-    _has_plan_confirmation_waiting = state.get("waiting_for_plan_confirmation", False)
     
-    if user_input == "__CLICK_CONFIRM__":
-        # 优先级：最新的阶段优先（plan_confirmation > plan_collector > plan_mode_confirm）
-        if _has_plan_confirmation_waiting:
-            print(f"[DEBUG] supervisor: 收到 __CLICK_CONFIRM__，路由到 plan_confirmation")
-            return _with_memory({
-                "intent": "plan_creation",
-                "selected_agent": "plan_confirmation",
-                "confidence": 1.0,
-                "execution_trace": [
-                    *execution_trace,
-                    {
-                        "node": "supervisor",
-                        "intent": "plan_creation",
-                        "selected_agent": "plan_confirmation",
-                        "confidence": 1.0,
-                        "user_input": "__CLICK_CONFIRM__",
-                        "rule": "frontend_confirm_link"
-                    }
-                ]
-            })
-        elif _has_plan_generator:
-            print(f"[DEBUG] supervisor: 收到 __CLICK_CONFIRM__，路由到 plan_generator（收集完成）")
-            return _with_memory({
-                "intent": "plan_creation",
-                "selected_agent": "plan_generator",
-                "confidence": 1.0,
-                "execution_trace": [
-                    *execution_trace,
-                    {
-                        "node": "supervisor",
-                        "intent": "plan_creation",
-                        "selected_agent": "plan_generator",
-                        "confidence": 1.0,
-                        "user_input": "__CLICK_CONFIRM__",
-                        "rule": "frontend_confirm_link"
-                    }
-                ]
-            })
-        elif _has_plan_ask:
-            print(f"[DEBUG] supervisor: 收到 __CLICK_CONFIRM__，路由到 plan_mode_confirm")
-            return _with_memory({
-                "intent": "plan_creation",
-                "selected_agent": "plan_mode_confirm",
-                "confidence": 1.0,
-                "execution_trace": [
-                    *execution_trace,
-                    {
-                        "node": "supervisor",
-                        "intent": "plan_creation",
-                        "selected_agent": "plan_mode_confirm",
-                        "confidence": 1.0,
-                        "user_input": "__CLICK_CONFIRM__",
-                        "rule": "frontend_confirm_link"
-                    }
-                ]
-            })
-
-    # ===== 前端点击「否」超链接发送的特殊指令 =====
-    if user_input == "__CLICK_NO__" and _has_plan_confirmation_waiting:
-        print(f"[DEBUG] supervisor: 收到 __CLICK_NO__，路由到 plan_confirmation（跳过创建）")
-        return _with_memory({
-            "intent": "plan_creation",
-            "selected_agent": "plan_confirmation",
-            "confidence": 1.0,
-            "execution_trace": [
-                *execution_trace,
-                {
-                    "node": "supervisor",
-                    "intent": "plan_creation",
-                    "selected_agent": "plan_confirmation",
-                    "confidence": 1.0,
-                    "user_input": "__CLICK_NO__",
-                    "rule": "frontend_reject_link"
-                }
-            ]
-        })
-
     # ===== 优先检查：是否正在进行计划生成流程 =====
-    # 判断标准：execution_trace 有计划节点 且 至少有一个等待标记为 True
-    # 计划完成后所有 waiting_for_* 都会被清空，此时即使 trace 有历史记录也不算"在流程中"
+    # 如果 execution_trace 中有计划相关节点，说明已经进入计划流程
+    # 此时即使选中了文档也不应被 RAG 拦截
     has_plan_mode_confirm = any(t.get("node") == "plan_mode_confirm" for t in execution_trace)
     has_plan_generator = any(t.get("node") == "plan_generator" for t in execution_trace)
-    waiting_mode = state.get("waiting_for_plan_mode_confirm", False)
-    waiting_confirmation = state.get("waiting_for_plan_confirmation", False)
-    needs_building = state.get("needs_plan_building", False)
-    plan_not_finished = waiting_mode or waiting_confirmation or needs_building
-    is_in_plan_flow = (has_plan_mode_confirm or has_plan_generator) and plan_not_finished
+    is_in_plan_flow = has_plan_mode_confirm or has_plan_generator
     
     if is_in_plan_flow:
         print(f"[DEBUG] supervisor: 检测到计划进行中，跳过 RAG 路由（doc_retriever 会在 plan_writer 前注入文档知识）")
@@ -257,7 +152,7 @@ async def supervisor_node(state) -> dict:
                 print(f"[DEBUG] supervisor: User selected docs but intent is plan creation, skipping RAG route")
             else:
                 print(f"[DEBUG] supervisor: User selected {len(selected_doc_ids)} docs, routing directly to RAG")
-                return _with_memory({
+                return {
                     "intent": "rag",
                     "selected_agent": "rag",
                     "confidence": 1.0,
@@ -272,7 +167,7 @@ async def supervisor_node(state) -> dict:
                             "selected_doc_ids": selected_doc_ids
                         }
                     ]
-                })
+                }
     
     # ===== 原逻辑：检查是否正在进行计划生成 =====
     # 如果已经在计划生成过程中，直接路由回 plan_generator
@@ -282,7 +177,7 @@ async def supervisor_node(state) -> dict:
     # 复用上面已获取的 has_plan_generator
     if has_plan_generator:
         is_in_plan_generation = True
-    from src.app.services.conversation_state import get_conversation_state, ConversationStateEnum
+    from src.app.service.conversation_state import get_conversation_state, ConversationStateEnum
     session_id = state.get("session_id", "default")
     conv_state = get_conversation_state(session_id)
     
@@ -299,7 +194,7 @@ async def supervisor_node(state) -> dict:
             # 如果当前任务是checkin，将action_type改为checkin（用户正在选择打卡序号）
             if action_type == "checkin":
                 print(f"[DEBUG] supervisor: 当前任务是checkin，用户输入序号，action_type改为checkin")
-        return _with_memory({
+        return {
             "intent": "assistant",
             "selected_agent": "assistant",
             "confidence": 1.0,
@@ -317,13 +212,13 @@ async def supervisor_node(state) -> dict:
                     "action_params": action_params
                 }
             ]
-        })
+        }
     
     # 优先检查是否正在等待计划模式确认
     if state.get("waiting_for_plan_mode_confirm"):
         plan_type = state.get("plan_type")
         print(f"[DEBUG] supervisor: waiting_for_plan_mode_confirm=True, routing to plan_mode_confirm")
-        return _with_memory({
+        return {
             "intent": "plan_creation",
             "selected_agent": "plan_mode_confirm",
             "confidence": 1.0,
@@ -337,14 +232,14 @@ async def supervisor_node(state) -> dict:
                     "plan_type": plan_type
                 }
             ]
-        })
+        }
     
     # 优先检查是否正在等待计划确认
     if state.get("waiting_for_plan_confirmation"):
         is_in_plan_generation = True
         plan_type = state.get("plan_type")
         print(f"[DEBUG] supervisor: waiting_for_plan_confirmation=True, routing to plan_confirmation")
-        return _with_memory({
+        return {
             "intent": "plan_creation",
             "selected_agent": "plan_confirmation",
             "confidence": 1.0,
@@ -358,7 +253,7 @@ async def supervisor_node(state) -> dict:
                     "plan_type": plan_type
                 }
             ]
-        })
+        }
     
     for trace in reversed(execution_trace):
         if trace.get("node") == "plan_generator":
@@ -375,7 +270,7 @@ async def supervisor_node(state) -> dict:
             if trace.get("plan_generated"):
                 is_in_plan_generation = True
                 plan_type = trace.get("plan_type")
-                return _with_memory({
+                return {
                     "intent": "plan_creation",
                     "selected_agent": "plan_confirmation",
                     "confidence": 1.0,
@@ -389,10 +284,9 @@ async def supervisor_node(state) -> dict:
                             "plan_type": plan_type
                         }
                     ]
-                })
+                }
             # 如果计划还在收集信息或需要澄清，继续路由到 plan_generator
-            # 但只有在计划未完成的情况下（needs_plan_building 或 plan_text_cache 还在）
-            if (trace.get("collecting_info") or trace.get("need_clarification")) and plan_not_finished:
+            if trace.get("collecting_info") or trace.get("need_clarification"):
                 is_in_plan_generation = True
                 plan_type = trace.get("plan_type")
                 break
@@ -400,7 +294,7 @@ async def supervisor_node(state) -> dict:
     # 如果正在计划生成过程中，直接路由回 plan_generator
     if is_in_plan_generation:
         print(f"[DEBUG] supervisor: routing back to plan_generator, plan_type={plan_type}")
-        return _with_memory({
+        return {
             "intent": "plan_creation",
             "selected_agent": "plan_generator",
             "confidence": 1.0,
@@ -414,7 +308,7 @@ async def supervisor_node(state) -> dict:
                     "plan_type": plan_type
                 }
             ]
-        })
+        }
     
     # ===== 前置关键词检查（比 LLM 分类更快更准确）=====
     user_input = state["user_input"].strip().lower()
@@ -426,7 +320,7 @@ async def supervisor_node(state) -> dict:
     if is_search:
         action_type, action_params = _detect_action_type(state["user_input"])
         print(f"[DEBUG] supervisor: 前置规则匹配「搜索」，路由到 assistant, action_type={action_type}")
-        return _with_memory({
+        return {
             "intent": "assistant",
             "selected_agent": "assistant",
             "confidence": 1.0,
@@ -442,12 +336,12 @@ async def supervisor_node(state) -> dict:
                     "action_type": action_type
                 }
             ]
-        })
+        }
 
     # 打卡关键词：直接路由到 assistant
     if user_input.startswith(("打卡", "我要打卡", "今日打卡", "签到")):
         print(f"[DEBUG] supervisor: 前置规则匹配「打卡」，路由到 assistant")
-        return _with_memory({
+        return {
             "intent": "assistant",
             "selected_agent": "assistant",
             "confidence": 1.0,
@@ -462,13 +356,13 @@ async def supervisor_node(state) -> dict:
                     "rule": "前置打卡关键词"
                 }
             ]
-        })
+        }
     
     # 发帖关键词：直接路由到 assistant
     if user_input.startswith(("发帖", "发帖子", "发布帖子", "发布", "发表")):
         action_type, action_params = _detect_action_type(state["user_input"])
         print(f"[DEBUG] supervisor: 前置规则匹配「发帖」，路由到 assistant")
-        return _with_memory({
+        return {
             "intent": "assistant",
             "selected_agent": "assistant",
             "confidence": 1.0,
@@ -483,13 +377,13 @@ async def supervisor_node(state) -> dict:
                     "rule": "前置发帖关键词"
                 }
             ]
-        })
+        }
     
     # 纯数字或序号：直接路由到 assistant（选择）
     if user_input.isdigit() or user_input.startswith(("第", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十")):
         action_type, action_params = _detect_action_type(state["user_input"])
         print(f"[DEBUG] supervisor: 前置规则匹配「数字/序号」，路由到 assistant, action_type={action_type}")
-        return _with_memory({
+        return {
             "intent": "assistant",
             "selected_agent": "assistant",
             "confidence": 1.0,
@@ -504,7 +398,7 @@ async def supervisor_node(state) -> dict:
                     "rule": "前置数字/序号规则"
                 }
             ]
-        })
+        }
     
     # ===== 计划创建关键词：直接路由到 plan_mode_confirm =====
     # 任何表达规划意图的输入，都统一路由到计划生成流程
@@ -521,7 +415,7 @@ async def supervisor_node(state) -> dict:
     # 检查是否包含计划关键词（搜索/打卡/发帖已在上方处理，不会走到这里）
     if any(kw in user_input for kw in plan_keywords):
             print(f"[DEBUG] supervisor: 前置规则匹配「计划创建」，统一路由到 plan_mode_confirm")
-            return _with_memory({
+            return {
                 "intent": "plan_creation",
                 "selected_agent": "plan_mode_confirm",
                 "confidence": 1.0,
@@ -534,33 +428,16 @@ async def supervisor_node(state) -> dict:
                         "rule": "前置计划关键词"
                     }
                 ]
-            })
+            }
     
     try:
-        # ===== LLM 预处理用户输入（提取核心语义用于检索匹配）=====
-        user_input = state["user_input"].strip()
-        processed_input = user_input  # 默认直接用原输入
-        if len(user_input) > 20:
-            try:
-                preprocess_llm = get_llm(temperature=0.1)
-                preprocess_prompt = (
-                    f"提取以下用户输入的核心意图关键词（最多10字），只输出关键词不要解释：\n{user_input}"
-                )
-                preprocess_result = await preprocess_llm.ainvoke([HumanMessage(content=preprocess_prompt)])
-                processed_text = preprocess_result.content.strip() if hasattr(preprocess_result, "content") else str(preprocess_result).strip()
-                if processed_text and len(processed_text) <= 50:
-                    processed_input = processed_text
-                    print(f"[DEBUG] supervisor: 用户输入预处理 '{user_input[:30]}...' → '{processed_input}'")
-            except Exception:
-                pass  # 预处理失败不影响主流程
-
         # 使用结构化输出，自动验证格式
         llm = get_llm().with_structured_output(IntentResult)
 
-        # 构建消息（用预处理后的输入辅助分类）
+        # 构建消息
         messages = [
             SystemMessage(content=INTENT_CLASSIFICATION_PROMPT),
-            HumanMessage(content=processed_input if processed_input != user_input else user_input)
+            HumanMessage(content=state["user_input"])
         ]
 
         # 调用LLM进行意图分类
@@ -570,11 +447,10 @@ async def supervisor_node(state) -> dict:
         # 如果识别到计划相关意图，先询问确认
         plan_intents = ["plan_creation"]
         if result.intent in plan_intents and result.confidence >= 0.5:
-            return _with_memory({
+            return {
                 "intent": result.intent,
                 "selected_agent": "plan_mode_confirm",
                 "confidence": result.confidence,
-                "processed_user_input": processed_input,
                 "execution_trace": [
                     {
                         "node": "supervisor",
@@ -584,19 +460,18 @@ async def supervisor_node(state) -> dict:
                         "action": "ask_confirmation"
                     }
                 ]
-            })
+            }
 
         # 如果是 assistant 意图，解析 action_type 和参数
         if result.intent == "assistant":
             action_type, action_params = _detect_action_type(state["user_input"])
             print(f"[DEBUG] supervisor: 识别为 assistant, action_type={action_type}, params={action_params}")
-            return _with_memory({
+            return {
                 "intent": "assistant",
                 "selected_agent": "assistant",
                 "confidence": result.confidence,
                 "action_type": action_type,
                 "action_params": action_params,
-                "processed_user_input": processed_input,
                 "execution_trace": [
                     {
                         "node": "supervisor",
@@ -607,14 +482,13 @@ async def supervisor_node(state) -> dict:
                         "action_params": action_params
                     }
                 ]
-            })
+            }
 
         # 更新状态（直接访问属性，无需 json.loads）
-        return _with_memory({
+        return {
             "intent": result.intent,
             "selected_agent": result.intent,
             "confidence": result.confidence,
-            "processed_user_input": processed_input,
             "execution_trace": [
                 {
                     "node": "supervisor",
@@ -623,15 +497,14 @@ async def supervisor_node(state) -> dict:
                     "user_input": state["user_input"][:100]
                 }
             ]
-        })
+        }
 
     except Exception as e:
         # 降级到chat
-        return _with_memory({
+        return {
             "intent": "chat",
             "selected_agent": "chat",
             "confidence": 0.0,
-            "processed_user_input": state.get("user_input", ""),
             "error": f"意图分类失败: {str(e)}",
             "execution_trace": [
                 {
@@ -642,26 +515,4 @@ async def supervisor_node(state) -> dict:
                     "fallback": True
                 }
             ]
-        })
-
-async def _preprocess_user_input_supervisor(state) -> dict:
-    """
-    轻量级预处理节点：只做 LLM 预处理用户输入，不分类。
-    用于在 supervisor 之外的场景（如独立调用）提取核心语义。
-    """
-    user_input = state.get("user_input", "").strip()
-    if not user_input or len(user_input) <= 20:
-        return {"processed_user_input": user_input}
-
-    try:
-        from langchain_core.messages import HumanMessage
-        from src.app.common.llm_factory import get_llm
-        llm = get_llm(temperature=0.1)
-        prompt = f"提取以下用户输入的核心意图关键词（最多10字），只输出关键词不要解释：\n{user_input}"
-        result = await llm.ainvoke([HumanMessage(content=prompt)])
-        processed = result.content.strip() if hasattr(result, "content") else str(result).strip()
-        if processed and len(processed) <= 50:
-            return {"processed_user_input": processed}
-    except Exception:
-        pass
-    return {"processed_user_input": user_input}
+        }

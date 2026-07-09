@@ -1,12 +1,19 @@
 package com.planhub.config;
 
+import io.netty.channel.ChannelOption;
+import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.netty.http.client.HttpClient;
+
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AI 服务配置
@@ -59,21 +66,36 @@ public class AiServiceConfig {
     }
 
     /**
-     * 配置用于调用 AI 服务的 RestTemplate
-     * 设置连接超时和读取超时，防止长时间阻塞
-     * 关键：禁用请求/响应体缓冲，支持 SSE 真正的流式传输
-     * @Lazy + @RefreshScope：配置变更后重新创建 Bean
+     * 配置用于调用 AI 服务的 RestTemplate（非流式请求用）
      */
     @Bean(name = "aiRestTemplate")
     @Lazy
     @RefreshScope
     public RestTemplate aiRestTemplate() {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        var factory = new org.springframework.http.client.SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(connectTimeout);
         factory.setReadTimeout(readTimeout);
-        // 注意：setBufferRequestBody 在 Spring 6.x 中已废弃
-        // 对于 SSE 流式传输，需要使用 ClientHttpRequestFactory 的其他实现
-        // 这里使用默认设置，因为 Spring 6.x 默认行为已经优化
         return new RestTemplate(factory);
+    }
+
+    /**
+     * 配置 WebClient（用于 SSE 流式透传）
+     * 使用 Reactor Netty HttpClient，支持真正的异步非阻塞流式传输
+     */
+    @Bean(name = "aiWebClient")
+    @Lazy
+    @RefreshScope
+    @SuppressWarnings("null")
+    public WebClient aiWebClient() {
+        HttpClient httpClient = HttpClient.create()
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, connectTimeout)
+                .responseTimeout(Duration.ofMillis(readTimeout))
+                .doOnConnected(conn -> conn.addHandlerLast(
+                        new ReadTimeoutHandler(readTimeout, TimeUnit.MILLISECONDS)));
+
+        return WebClient.builder()
+                .baseUrl(aiServiceUrl)
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
     }
 }

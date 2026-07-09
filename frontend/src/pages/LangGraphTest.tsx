@@ -40,6 +40,7 @@ interface Message {
   executionTrace?: any[];
   blockedByCapability?: boolean;
   handoffReason?: string;
+  isStreaming?: boolean;
 }
 
 interface DebugInfo {
@@ -51,6 +52,8 @@ interface DebugInfo {
   executionTrace: any[];
   toolsCalled: string[];
   sessionId: string;
+  isStreaming?: boolean;
+  streamResponse?: string;
   planMetadata?: {
     plan_summary: string;
     api_sources: { tool: string; success: boolean; summary: string }[];
@@ -118,203 +121,6 @@ const LangGraphTest = () => {
     return parts.length > 0 ? <>{parts}</> : content;
   };
 
-  // 检测 AI 消息是否处于计划引导流程中
-  const isPlanGuideMessage = (msg: Message) => {
-    if (msg.role !== 'assistant') return false;
-    const content = msg.content;
-    if (content.includes('点击「确认」') || content.includes('请点击确认')) return true;
-    if (content.includes('开始制定') || content.includes('回复「是」')) return true;
-    if (content.includes('关于什么的计划') || content.includes('关于什么计划')) return true;
-    if (content.includes('是否要将此计划创建到 PlanHub 平台')) return true;
-    if (content.includes('请点击「确认」来创建') || content.includes('请回复「是」或「确认」来创建')) return true;
-    if (content.includes('信息收集') && content.includes('确认')) return true;
-    if (content.includes('随时说') && content.includes('确认')) return true;
-    if (content.includes('说确认') || content.includes('说「确认」') || content.includes("说'确认'")) return true;
-    return false;
-  };
-
-  // 点击「确认」超链接的处理函数
-  const handleConfirmPlan = async () => {
-    if (isLoading) return;
-
-    const userMessage: Message = {
-      role: 'user',
-      content: '确认',
-      timestamp: new Date().toISOString()
-    };
-    setMessages(prev => [...prev, userMessage]);
-    setIsLoading(true);
-
-    try {
-      const response = await fetch(`${AI_API_BASE}/orchestrator/chat`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          message: '__CLICK_CONFIRM__',
-          session_id: sessionId || undefined,
-          user_id: user?.id || 'anonymous',
-          doc_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
-        })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: data.response || '',
-          timestamp: new Date().toISOString(),
-          intent: data.intent || undefined,
-          confidence: data.confidence || 0,
-          executionTrace: data.execution_trace || [],
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || undefined
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        setSessionId(data.session_id || '');
-
-        setDebugInfo({
-          intent: data.intent || '',
-          confidence: data.confidence || 0,
-          selectedAgent: data.intent || '',
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || '',
-          executionTrace: Array.isArray(data.execution_trace) ? data.execution_trace : [],
-          toolsCalled: Array.isArray(data.execution_trace)
-            ? data.execution_trace.flatMap((t: any) => t.tools_called || [])
-            : [],
-          sessionId: data.session_id || '',
-          planMetadata: data.plan_metadata || undefined,
-        });
-      } else {
-        throw new Error(`请求失败: ${response.status}`);
-      }
-    } catch (error) {
-      console.error('Confirm plan error:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 点击「否」超链接的处理函数（跳过创建）
-  const handleRejectPlan = async () => {
-    if (isLoading) return;
-
-    const userMessage: Message = {
-      role: 'user',
-      content: '否',
-      timestamp: new Date().toISOString()
-    };
-    setMessages(prev => [...prev, userMessage]);
-    setIsLoading(true);
-
-    try {
-      const response = await fetch(`${AI_API_BASE}/orchestrator/chat`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          message: '__CLICK_NO__',
-          session_id: sessionId || undefined,
-          user_id: user?.id || 'anonymous',
-          doc_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
-        })
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: data.response || '',
-          timestamp: new Date().toISOString(),
-          intent: data.intent || undefined,
-          confidence: data.confidence || 0,
-          executionTrace: data.execution_trace || [],
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || undefined
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        setSessionId(data.session_id || '');
-      } else {
-        throw new Error(`请求失败: ${response.status}`);
-      }
-    } catch (error) {
-      console.error('Reject plan error:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 渲染 AI 消息内容：如果处于计划引导流程，将关键词替换为可点击超链接
-  const renderAssistantContent = (msg: Message) => {
-    const parsedContent = parseMessageContent(msg.content);
-
-    if (!isPlanGuideMessage(msg)) {
-      return parsedContent;
-    }
-
-    const contentStr = msg.content;
-    const patterns: { regex: RegExp; label: string; action: 'confirm' | 'reject' }[] = [
-      { regex: /(?<=点击)["'"\u201c\u2018\u300c]?确认["'"\u201d\u2019\u300d]?/g, label: '确认', action: 'confirm' },
-      { regex: /「确认」/g, label: '确认', action: 'confirm' },
-      { regex: /「是」/g, label: '是', action: 'confirm' },
-      { regex: /(?<=点击)["'"\u201c\u2018\u300c]?否["'"\u201d\u2019\u300d]?/g, label: '否', action: 'reject' },
-      { regex: /「否」/g, label: '否', action: 'reject' },
-      { regex: /开始制定/g, label: '开始制定', action: 'confirm' },
-    ];
-
-    for (const { regex, label, action } of patterns) {
-      if (regex.test(contentStr)) {
-        regex.lastIndex = 0;
-        const parts = contentStr.split(regex);
-        if (parts.length >= 2) {
-          const result: React.ReactNode[] = [];
-          for (let i = 0; i < parts.length; i++) {
-            result.push(
-              <span key={`text-${i}`}>
-                {parseMessageContent(parts[i])}
-              </span>
-            );
-            if (i < parts.length - 1) {
-              result.push(
-                <a
-                  key={`link-${i}`}
-                  onClick={action === 'confirm' ? handleConfirmPlan : handleRejectPlan}
-                  style={{
-                    color: '#3b82f6',
-                    cursor: 'pointer',
-                    textDecoration: 'underline',
-                    fontWeight: 600
-                  }}
-                  title={action === 'confirm' ? "点击确认进入下一步" : "点击跳过"}
-                >
-                  {label}
-                </a>
-              );
-            }
-          }
-          return <>{result}</>;
-        }
-      }
-    }
-
-    return parsedContent;
-  };
-
   // 知识库相关状态
   const [documents, setDocuments] = useState<any[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<number[]>([]);
@@ -374,7 +180,7 @@ const LangGraphTest = () => {
     if (id) {
       sessions[_tabId] = id;
     } else {
-      sessions[_tabId] = '';
+      delete sessions[_tabId];
     }
     localStorage.setItem('orchestrator_sessions', JSON.stringify(sessions));
   };
@@ -569,7 +375,7 @@ const LangGraphTest = () => {
 
   const loadConversation = async (convSessionId: string) => {
     try {
-      const response = await fetch(`${CONVERSATIONS_API}/${convSessionId}`, {
+      const response = await fetch(`${AI_API_BASE}/orchestrator/history/${convSessionId}`, {
         headers: getAuthHeaders(),
       });
       if (response.ok) {
@@ -607,12 +413,33 @@ const LangGraphTest = () => {
       timestamp: new Date().toISOString()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    // 先插入一条空的 assistant 消息，流式过程中实时更新它
+    const streamingMsg: Message = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toISOString(),
+      isStreaming: true
+    };
+
+    setMessages(prev => [...prev, userMessage, streamingMsg]);
     setQuery('');
     setIsLoading(true);
 
+    // 初始化调试面板的流式状态
+    setDebugInfo({
+      intent: '',
+      confidence: 0,
+      selectedAgent: '',
+      blockedByCapability: false,
+      executionTrace: [],
+      toolsCalled: [],
+      sessionId: sessionId || '',
+      isStreaming: true,
+      streamResponse: '',
+    });
+
     try {
-      const response = await fetch(`${AI_API_BASE}/orchestrator/chat`, {
+      const response = await fetch(`${AI_API_BASE}/orchestrator/stream`, {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
@@ -623,47 +450,156 @@ const LangGraphTest = () => {
         })
       });
 
-      if (response.ok) {
-        const data = await response.json();
-
-        const assistantMessage: Message = {
-          role: 'assistant',
-          content: data.response || '',
-          timestamp: new Date().toISOString(),
-          intent: data.intent || undefined,
-          confidence: data.confidence || 0,
-          executionTrace: data.execution_trace || [],
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || undefined
-        };
-
-        setMessages(prev => [...prev, assistantMessage]);
-        setSessionId(data.session_id || '');
-
-        setDebugInfo({
-          intent: data.intent || '',
-          confidence: data.confidence || 0,
-          selectedAgent: data.intent || '',
-          blockedByCapability: data.blocked_by_capability || false,
-          handoffReason: data.handoff_reason || '',
-          executionTrace: Array.isArray(data.execution_trace) ? data.execution_trace : [],
-          toolsCalled: Array.isArray(data.execution_trace)
-            ? data.execution_trace.flatMap((t: any) => t.tools_called || [])
-            : [],
-          sessionId: data.session_id || '',
-          planMetadata: data.plan_metadata || undefined,
-        });
-      } else {
+      if (!response.ok) {
         throw new Error(`请求失败: ${response.status}`);
+      }
+
+      // 流式读取 SSE
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let lastContent = '';
+      let lastTrace: any[] = [];
+      let finalSessionId = sessionId;
+      let finalIntent = '';
+      let finalConfidence = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // 按 SSE 事件分割（\n\n 为事件分隔符）
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          if (!part.trim()) continue;
+
+          // 解析 SSE 格式：event: xxx\ndata: {...}
+          let eventType = 'message';
+          let dataStr = '';
+
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              dataStr = line.slice(6).trim();
+            }
+          }
+
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+
+            if (eventType === 'response') {
+              // 节点输出快照 → 更新 assistant 消息内容 + 调试面板流式内容
+              lastContent = data.content || lastContent;
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (newMsgs[lastIdx]?.role === 'assistant') {
+                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent };
+                }
+                return newMsgs;
+              });
+              // 调试面板同步更新流式响应
+              setDebugInfo(prev => ({
+                ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
+                streamResponse: lastContent,
+                isStreaming: true,
+              }));
+            } else if (eventType === 'trace') {
+              // 增量追加 trace → 调试面板实时更新
+              const newTraces = data.traces || [];
+              lastTrace = [...lastTrace, ...newTraces];
+              // 从 trace 中提取 intent（supervisor 节点）
+              for (const t of newTraces) {
+                if (t.node === 'supervisor' && t.intent) finalIntent = t.intent;
+              }
+              setDebugInfo(prev => ({
+                ...(prev || { intent: finalIntent, confidence: 0, selectedAgent: finalIntent, blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: finalSessionId }),
+                intent: finalIntent || prev?.intent || '',
+                selectedAgent: finalIntent || prev?.selectedAgent || '',
+                executionTrace: lastTrace,
+                toolsCalled: lastTrace.flatMap((t: any) => t.tools_called || []),
+                isStreaming: true,
+              }));
+            } else if (eventType === 'done') {
+              // 最终完成
+              lastContent = data.response || lastContent;
+              finalSessionId = data.session_id || finalSessionId;
+              finalIntent = data.intent || finalIntent;
+              const execTrace = data.execution_trace || [];
+              lastTrace = execTrace.length > 0 ? execTrace : lastTrace;
+
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (newMsgs[lastIdx]?.role === 'assistant') {
+                  newMsgs[lastIdx] = {
+                    ...newMsgs[lastIdx],
+                    content: lastContent,
+                    isStreaming: false,
+                    intent: finalIntent || undefined,
+                    confidence: finalConfidence || 0,
+                    executionTrace: lastTrace,
+                    blockedByCapability: false,
+                  };
+                }
+                return newMsgs;
+              });
+
+              setSessionId(finalSessionId);
+              setDebugInfo({
+                intent: finalIntent,
+                confidence: finalConfidence,
+                selectedAgent: finalIntent,
+                blockedByCapability: false,
+                handoffReason: '',
+                executionTrace: lastTrace,
+                toolsCalled: lastTrace.flatMap((t: any) => t.tools_called || []),
+                sessionId: finalSessionId,
+                isStreaming: false,
+                streamResponse: lastContent,
+                planMetadata: data.plan_metadata || undefined,
+              });
+            } else if (eventType === 'error') {
+              lastContent = `抱歉，发生错误：${data.detail || '未知错误'}`;
+              setMessages(prev => {
+                const newMsgs = [...prev];
+                const lastIdx = newMsgs.length - 1;
+                if (newMsgs[lastIdx]?.role === 'assistant') {
+                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent, isStreaming: false };
+                }
+                return newMsgs;
+              });
+              setDebugInfo(prev => ({
+                ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
+                isStreaming: false,
+              }));
+            }
+          } catch {
+            // JSON 解析失败，按纯文本处理
+          }
+        }
       }
     } catch (error) {
       console.error('Chat error:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
-        timestamp: new Date().toISOString()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        const lastIdx = newMsgs.length - 1;
+        if (newMsgs[lastIdx]?.role === 'assistant') {
+          newMsgs[lastIdx] = {
+            ...newMsgs[lastIdx],
+            content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
+            isStreaming: false
+          };
+        }
+        return newMsgs;
+      });
     } finally {
       setIsLoading(false);
     }
@@ -751,31 +687,34 @@ const LangGraphTest = () => {
       supervisor: { label: '意图识别', icon: <Target size={14} />, color: '#6366f1' },
       plan_mode_confirm: { label: '计划模式确认', icon: <HelpCircle size={14} />, color: '#f59e0b' },
       plan_generator: { label: '生成计划', icon: <FileText size={14} />, color: '#10b981' },
+      plan_writer: { label: '生成计划文本', icon: <FileText size={14} />, color: '#059669' },
       plan_confirmation: { label: '确认计划', icon: <CheckCircle size={14} />, color: '#14b8a6' },
       extract_plan_title: { label: '提取计划标题', icon: <Bookmark size={14} />, color: '#0ea5e9' },
       create_plan_to_platform: { label: '创建到平台', icon: <Rocket size={14} />, color: '#8b5cf6' },
       chat: { label: '日常对话', icon: <MessageSquare size={14} />, color: '#64748b' },
       assistant: { label: '通用助手', icon: <Bot size={14} />, color: '#6366f1' },
       rag: { label: '知识库查询', icon: <Search size={14} />, color: '#06b6d4' },
+      doc_retriever: { label: '检索文档', icon: <Search size={14} />, color: '#0891b2' },
       tool_calls: { label: '工具调用', icon: <Wrench size={14} />, color: '#f59e0b' },
+      tool_executor: { label: '执行工具', icon: <Wrench size={14} />, color: '#d97706' },
       memory_save: { label: '保存记忆', icon: <Save size={14} />, color: '#6b7280' },
     };
-    
+
     const base = nodes[nodeName] || { label: nodeName, icon: <Settings size={14} />, color: '#6b7280' };
-    
+
     const details: string[] = [];
-    
+
     if (trace?.intent) {
-      details.push(`意图: ${getIntentLabel(trace.intent)}`);
+      details.push(`意图识别: ${getIntentLabel(trace.intent)}`);
     }
     if (typeof trace?.confidence === 'number') {
       details.push(`置信度: ${(trace.confidence * 100).toFixed(1)}%`);
     }
     if (trace?.selected_agent) {
-      details.push(`路由到: ${getIntentLabel(trace.selected_agent)}`);
+      details.push(`路由至: ${getIntentLabel(trace.selected_agent)}`);
     }
     if (trace?.plan_type) {
-      details.push(`计划类型: ${getIntentLabel(trace.plan_type)}`);
+      details.push(`计划类型: ${getPlanTypeLabel(trace.plan_type)}`);
     }
     if (trace?.progress) {
       details.push(`进度: ${trace.progress}`);
@@ -784,10 +723,10 @@ const LangGraphTest = () => {
       details.push('计划生成完成');
     }
     if (trace?.extracted_title) {
-      details.push(`标题: ${trace.extracted_title}`);
+      details.push(`提取标题: ${trace.extracted_title}`);
     }
     if (trace?.plan_created) {
-      details.push(`计划ID: ${trace.plan_id || '已创建'}`);
+      details.push(`已创建计划ID: ${trace.plan_id || '未知'}`);
     }
     if (trace?.response_length) {
       details.push(`回复长度: ${trace.response_length} 字`);
@@ -796,19 +735,43 @@ const LangGraphTest = () => {
       details.push(`错误: ${trace.error}`);
     }
     if (trace?.need_clarification) {
-      details.push('需要用户澄清');
+      details.push('需要用户补充信息');
     }
     if (trace?.waiting_for_confirmation) {
       details.push('等待用户确认');
     }
+    if (trace?.collecting_info) {
+      details.push('正在收集计划信息...');
+    }
     if (trace?.first_time) {
-      details.push('首次进入');
+      details.push('首次进入该节点');
     }
     if (trace?.result_count !== undefined) {
-      details.push(`结果数量: ${trace.result_count}`);
+      details.push(`返回 ${trace.result_count} 条结果`);
     }
-    
+    if (trace?.rag_fallback_to_chat) {
+      details.push('知识库无结果，降级为日常对话');
+    }
+    if (trace?.current_status) {
+      details.push(`状态: ${trace.current_status}`);
+    }
+    if (trace?.session_id) {
+      details.push(`会话: ${trace.session_id.slice(0, 8)}...`);
+    }
+
     return { ...base, details };
+  };
+
+  const getPlanTypeLabel = (planType: string) => {
+    const labels: Record<string, string> = {
+      travel: '旅行计划',
+      fitness: '健身计划',
+      work: '工作计划',
+      study: '学习计划',
+      custom: '自定义计划',
+      food: '美食计划',
+    };
+    return labels[planType] || planType;
   };
 
   const getToolLabel = (toolName: string) => {
@@ -1074,7 +1037,10 @@ const LangGraphTest = () => {
                     )}
 
                     <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {msg.role === 'assistant' ? renderAssistantContent(msg) : msg.content}
+                      {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+                      {msg.isStreaming && (
+                        <span style={{ display: 'inline-block', marginLeft: 4, animation: 'blink 1s infinite' }}>▊</span>
+                      )}
                     </div>
                     {msg.timestamp && (
                       <span style={styles.messageTime}>{formatTime(msg.timestamp)}</span>
@@ -1084,8 +1050,8 @@ const LangGraphTest = () => {
               );
             })}
 
-            {/* 加载状态 */}
-            {isLoading && (
+            {/* 加载状态（仅在非流式且正在加载时显示） */}
+            {isLoading && !messages[messages.length - 1]?.isStreaming && (
               <div style={{ ...styles.message, ...styles.assistantMessage }}>
                 <div style={{ ...styles.avatar, ...styles.assistantAvatar }}>
                   <img src="/robot-icon.png" alt="对话机器人" style={{ width: 36, height: 36 }} />
@@ -1314,18 +1280,40 @@ const LangGraphTest = () => {
                     </div>
                   )}
 
-                  {/* 执行流程 */}
+                  {/* 执行流程（流式实时更新） */}
                   <div>
                     <h4 style={styles.debugSectionTitle}>
                       执行流程
+                      {debugInfo.isStreaming && (
+                        <span style={{
+                          marginLeft: '8px',
+                          fontSize: '11px',
+                          fontWeight: 400,
+                          color: '#3b82f6',
+                        }}>
+                          ● 进行中
+                        </span>
+                      )}
                     </h4>
+                    {debugInfo.executionTrace.length === 0 && debugInfo.isStreaming && (
+                      <div style={{
+                        padding: '16px',
+                        textAlign: 'center',
+                        color: '#64748b',
+                        fontSize: '12px',
+                      }}>
+                        <Loader2 size={20} style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
+                        <div>正在分析请求...</div>
+                      </div>
+                    )}
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
                       {debugInfo.executionTrace.map((trace: any, index: number) => {
                         const nodeName = trace?.node || trace?.name || 'unknown';
                         const nodeInfo = getNodeInfo(nodeName, trace);
                         const isSuccess = trace?.success !== false;
                         const isLast = index === debugInfo.executionTrace.length - 1;
-                        
+                        const isCurrent = debugInfo.isStreaming && isLast; // 流式进行中最后一个节点高亮
+
                         return (
                           <div key={index} style={{ display: 'flex', position: 'relative' }}>
                             {/* 时间轴竖线 */}
@@ -1339,13 +1327,13 @@ const LangGraphTest = () => {
                                 backgroundColor: isSuccess ? '#e2e8f0' : '#fecaca',
                               }} />
                             )}
-                            
+
                             {/* 节点图标 */}
                             <div style={{
                               width: '32px',
                               height: '32px',
                               borderRadius: '50%',
-                              backgroundColor: isSuccess ? nodeInfo.color : '#ef4444',
+                              backgroundColor: isCurrent ? '#3b82f6' : (isSuccess ? nodeInfo.color : '#ef4444'),
                               color: 'white',
                               display: 'flex',
                               alignItems: 'center',
@@ -1355,18 +1343,23 @@ const LangGraphTest = () => {
                               fontSize: '14px',
                               fontWeight: 600,
                               marginRight: '12px',
+                              boxShadow: isCurrent ? '0 0 0 3px #bfdbfe' : 'none',
                             }}>
-                              {isSuccess ? nodeInfo.icon : '✗'}
+                              {isCurrent ? (
+                                <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                              ) : (
+                                isSuccess ? nodeInfo.icon : '✗'
+                              )}
                             </div>
-                            
+
                             {/* 节点内容 */}
                             <div style={{
                               flex: 1,
                               marginBottom: isLast ? '0' : '12px',
                               padding: '10px 12px',
-                              backgroundColor: isSuccess ? '#f8fafc' : '#fef2f2',
+                              backgroundColor: isCurrent ? '#eff6ff' : (isSuccess ? '#f8fafc' : '#fef2f2'),
                               borderRadius: '8px',
-                              border: `1px solid ${isSuccess ? '#e2e8f0' : '#fecaca'}`,
+                              border: `1px solid ${isCurrent ? '#bfdbfe' : (isSuccess ? '#e2e8f0' : '#fecaca')}`,
                             }}>
                               <div style={{
                                 display: 'flex',
@@ -1377,19 +1370,19 @@ const LangGraphTest = () => {
                                 <span style={{
                                   fontSize: '13px',
                                   fontWeight: 600,
-                                  color: '#1e293b',
+                                  color: isCurrent ? '#1d4ed8' : '#1e293b',
                                 }}>
                                   {nodeInfo.label}
                                 </span>
                                 <span style={{
                                   fontSize: '11px',
-                                  color: isSuccess ? '#64748b' : '#dc2626',
+                                  color: isCurrent ? '#3b82f6' : (isSuccess ? '#64748b' : '#dc2626'),
                                 }}>
-                                  {isSuccess ? '成功' : '失败'}
+                                  {isCurrent ? '执行中...' : (isSuccess ? '成功' : '失败')}
                                 </span>
                               </div>
-                              
-                              {/* 关键信息 */}
+
+                              {/* 关键信息（中文化详情） */}
                               {nodeInfo.details.length > 0 && (
                                 <div style={{
                                   display: 'flex',
@@ -1408,8 +1401,8 @@ const LangGraphTest = () => {
                                   ))}
                                 </div>
                               )}
-                              
-                              {/* 工具调用 */}
+
+                              {/* 工具调用（中文标签 + 参数摘要） */}
                               {trace?.tools_called && Array.isArray(trace.tools_called) && trace.tools_called.length > 0 && (
                                 <div style={{
                                   marginTop: '8px',
@@ -1425,16 +1418,78 @@ const LangGraphTest = () => {
                                     调用工具
                                   </div>
                                   <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                    {trace.tools_called.map((tool: string, i: number) => (
+                                    {trace.tools_called.map((tool: any, i: number) => {
+                                      // 支持两种格式：string 或 {tool, params, result}
+                                      const toolName = typeof tool === 'string' ? tool : tool.tool;
+                                      const toolParams = typeof tool === 'object' ? tool.params : null;
+                                      const toolResult = typeof tool === 'object' ? tool.result : null;
+                                      const toolSuccess = typeof tool === 'object' ? tool.success !== false : true;
+                                      return (
+                                        <div key={i} style={{
+                                          display: 'flex',
+                                          alignItems: 'flex-start',
+                                          gap: '6px',
+                                          fontSize: '11px',
+                                          padding: '4px 6px',
+                                          backgroundColor: toolSuccess ? '#f0fdf4' : '#fef2f2',
+                                          borderRadius: '4px',
+                                        }}>
+                                          <span style={{ color: toolSuccess ? '#16a34a' : '#dc2626', marginTop: '1px' }}>
+                                            {toolSuccess ? '✓' : '✗'}
+                                          </span>
+                                          <div style={{ flex: 1 }}>
+                                            <div style={{ color: '#1e293b', fontWeight: 500 }}>{getToolLabel(toolName)}</div>
+                                            {toolParams && (
+                                              <div style={{ color: '#64748b', marginTop: '2px', fontFamily: 'monospace', fontSize: '10px' }}>
+                                                参数: {typeof toolParams === 'string' ? toolParams : JSON.stringify(toolParams).slice(0, 100)}
+                                              </div>
+                                            )}
+                                            {toolResult && (
+                                              <div style={{ color: '#64748b', marginTop: '2px', fontSize: '10px' }}>
+                                                结果: {typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult).slice(0, 100)}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* 文档引用 */}
+                              {trace?.docs_used && Array.isArray(trace.docs_used) && trace.docs_used.length > 0 && (
+                                <div style={{
+                                  marginTop: '8px',
+                                  paddingTop: '8px',
+                                  borderTop: '1px dashed #e2e8f0',
+                                }}>
+                                  <div style={{
+                                    fontSize: '11px',
+                                    fontWeight: 600,
+                                    color: '#475569',
+                                    marginBottom: '4px',
+                                  }}>
+                                    引用文档
+                                  </div>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                    {trace.docs_used.map((doc: any, i: number) => (
                                       <div key={i} style={{
                                         display: 'flex',
                                         alignItems: 'center',
                                         gap: '6px',
                                         fontSize: '11px',
-                                        color: '#475569',
+                                        padding: '4px 6px',
+                                        backgroundColor: '#eff6ff',
+                                        borderRadius: '4px',
                                       }}>
-                                        <span style={{ color: '#10b981' }}>✓</span>
-                                        {getToolLabel(tool)}
+                                        <span style={{ color: '#2563eb' }}>📄</span>
+                                        <span style={{ color: '#1e293b', fontWeight: 500 }}>
+                                          {typeof doc === 'string' ? doc : (doc.name || doc.title || '未知文档')}
+                                        </span>
+                                        {typeof doc === 'object' && doc.chunks && (
+                                          <span style={{ color: '#64748b' }}>引用 {doc.chunks} 段</span>
+                                        )}
                                       </div>
                                     ))}
                                   </div>

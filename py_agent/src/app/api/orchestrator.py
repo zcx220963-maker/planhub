@@ -11,7 +11,7 @@ LangGraph多Agent编排API
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, validator
-from typing import Optional, Union, Dict, Any
+from typing import Any, Dict, Optional, Union
 import json
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -30,7 +30,6 @@ class OrchestrateRequest(BaseModel):
     temperature: float = 0.7
     capabilities: CapabilityFlags = CapabilityFlags()
     doc_ids: Optional[list] = None  # 用户选中的文档ID列表（兼容前端传递方式）
-    force_new_session: bool = False  # 强制创建新会话，清除旧状态
 
     @validator('user_id', pre=True)
     def convert_user_id_to_str(cls, v):
@@ -118,9 +117,21 @@ class _RedisCheckpointer(BaseCheckpointSaver):
         t = await self.aget_tuple(config)
         return t.checkpoint if t else {}
 
+    def get_next_version(self, current, channel):
+        """生成下一个 channel 版本号（兼容新版 LangGraph）"""
+        import random
+        if current is None:
+            current_v = 0
+        elif isinstance(current, int):
+            current_v = current
+        else:
+            current_v = int(str(current).split(".")[0])
+        next_v = current_v + 1
+        next_h = random.random()
+        return f"{next_v:032}.{next_h:016}"
+
     async def aget_next_version(self, current, channel):
-        from langgraph.checkpoint.memory import MemorySaver
-        return MemorySaver().get_next_version(current, channel)
+        return self.get_next_version(current, channel)
 
 
 def _get_checkpointer():
@@ -293,20 +304,6 @@ async def orchestrate_chat(request: Request, body: OrchestrateRequest):
         # 重要：新会话必须生成新的 session_id，避免共享状态
         session_id = body.session_id or generate_session_id()
 
-        # 如果强制新建会话，清除旧状态并生成新 session_id
-        old_session_id = session_id
-        if body.force_new_session:
-            session_id = generate_session_id()
-            print(f"[DEBUG] orchestrator: force_new_session=True, 生成新 session_id={session_id[:8]}..., 旧 session_id={old_session_id[:8]}...")
-            # 清除旧 checkpoint
-            try:
-                if _checkpointer and hasattr(_checkpointer, 'redis'):
-                    old_thread_id = get_thread_id(old_session_id)
-                    await _checkpointer.redis.delete(f"ckpt:{old_thread_id}")
-                    print(f"[DEBUG] orchestrator: 已清除旧 checkpoint key=ckpt:{old_thread_id}")
-            except Exception as e:
-                print(f"[WARN] orchestrator: 清除旧 checkpoint 失败: {e}")
-
         # 获取图（带checkpointer）
         graph = get_graph()
         thread_id = get_thread_id(session_id)
@@ -331,10 +328,9 @@ async def orchestrate_chat(request: Request, body: OrchestrateRequest):
         }
 
         # checkpoint 不存在时（已过期），尝试从 Redis 会话历史重建 plan flow 状态
-        # 注意：如果是新会话（前端没传 session_id），则不恢复旧状态，避免跨会话污染
         checkpoint = await _checkpointer.aget_next_version(None, "") if _checkpointer else None
         existing_tuple = await _checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}}) if _checkpointer else None
-        if not existing_tuple and body.session_id:
+        if not existing_tuple:
             restored = _restore_state_from_history(session_id)
             if restored:
                 invoke_input.update(restored)
@@ -345,11 +341,10 @@ async def orchestrate_chat(request: Request, body: OrchestrateRequest):
             config={"configurable": {"thread_id": thread_id}}
         )
 
-        # 提取响应（优先取 agent_output，因为每个有输出的节点都会设置它
-        # final_response 可能是前面节点设置的，会被后面的节点覆盖
+        # 提取响应
         response_text = (
-            result.get("agent_output") or
             result.get("final_response") or
+            result.get("agent_output") or
             "抱歉，处理失败"
         )
 
@@ -360,55 +355,13 @@ async def orchestrate_chat(request: Request, body: OrchestrateRequest):
         # 提取计划元数据（供前端展示数据来源）
         plan_metadata = result.get("plan_metadata")
 
-        # 处理 execution_trace：如果 memory_save 标记了 trace_reset，
-        # 则只返回当次请求的 trace（从最后一个 reset 标记开始）
-        execution_trace = result.get("execution_trace", [])
-        reset_idx = None
-        for i in range(len(execution_trace) - 1, -1, -1):
-            if execution_trace[i].get("trace_reset"):
-                reset_idx = i
-                break
-        if reset_idx is not None:
-            execution_trace = execution_trace[reset_idx:]
-
-        # 保存到会话列表（让历史记录能显示）
-        try:
-            from ..dao.redis_dao import add_chat_message
-            add_chat_message(
-                session_id=session_id,
-                role="user",
-                content=body.message,
-                user_id=str(body.user_id) if body.user_id is not None else None,
-                module="orchestrator"
-            )
-            add_chat_message(
-                session_id=session_id,
-                role="assistant",
-                content=response_text,
-                user_id=str(body.user_id) if body.user_id is not None else None,
-                module="orchestrator"
-            )
-            # 更新标题（使用第一条用户消息）
-            from ..dao.redis_dao import save_session, get_session
-            existing = get_session(session_id)
-            if existing and not existing.get("title"):
-                save_session(
-                    session_id=session_id,
-                    session_data={"title": body.message[:50]},
-                    expire_seconds=86400,
-                    user_id=str(body.user_id) if body.user_id is not None else None,
-                    module="orchestrator"
-                )
-        except Exception as e:
-            print(f"[WARN] orchestrator: 保存会话列表失败: {e}")
-
         return OrchestrateResponse(
             response=response_text,
             intent=result.get("intent"),
             confidence=result.get("confidence", 0.0),
             blocked_by_capability=blocked,
             handoff_reason=handoff_reason,
-            execution_trace=execution_trace,
+            execution_trace=result.get("execution_trace", []),
             session_id=session_id,
             plan_metadata=plan_metadata,
         )
@@ -421,45 +374,132 @@ async def orchestrate_chat(request: Request, body: OrchestrateRequest):
 
 
 @router.post("/stream")
-async def orchestrate_stream(request: OrchestrateRequest):
+async def orchestrate_stream(request: Request, body: OrchestrateRequest):
     """
     流式输出版本
 
-    使用SSE协议实时推送Agent执行过程
+    SSE 协议实时推送：
+    - response 事件：节点输出快照（content 为当前完整响应文本）
+    - trace 事件：节点执行轨迹（用于前端调试面板）
+    - done 事件：流程结束，包含完整响应 + session_id + execution_trace
+
+    前端处理：
+    1. 收到 response 事件 → 更新或追加 assistant 消息内容
+    2. 收到 trace 事件 → 追加到 debug 面板
+    3. 收到 done 事件 → 保存 session_id，标记流式结束
     """
-    # 生成或使用session_id
-    session_id = request.session_id or generate_session_id()
-    
+    # 从请求 Header 获取 Authorization token
+    authorization = request.headers.get("Authorization")
+    token = None
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+
+    from app.common.llm_factory import set_request_token
+    set_request_token(token)
+
+    from app.common.langchain_tools import reset_tool_call_counts
+    reset_tool_call_counts()
+
+    session_id = body.session_id or generate_session_id()
+    graph = get_graph()
+    thread_id = get_thread_id(session_id)
+
+    capabilities_dict = body.capabilities.dict() if hasattr(body.capabilities, 'dict') else dict(body.capabilities)
+    selected_doc_ids = body.doc_ids if body.doc_ids else capabilities_dict.get("selected_doc_ids", [])
+    selected_doc_ids = [str(did) for did in selected_doc_ids] if selected_doc_ids else []
+
+    invoke_input = {
+        "user_input": body.message,
+        "session_id": session_id,
+        "user_id": str(body.user_id) if body.user_id is not None else None,
+        "capabilities": capabilities_dict,
+        "selected_doc_ids": selected_doc_ids,
+        "rag_fallback_to_chat": False,
+    }
+
+    # checkpoint 不存在时尝试从 Redis 会话历史重建
+    if _checkpointer:
+        try:
+            existing_tuple = await _checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+            if not existing_tuple:
+                restored = _restore_state_from_history(session_id)
+                if restored:
+                    invoke_input.update(restored)
+                    log_stream_restore = True
+                else:
+                    log_stream_restore = False
+            else:
+                log_stream_restore = False
+        except Exception:
+            log_stream_restore = False
+    else:
+        log_stream_restore = False
+
     async def event_generator():
         try:
-            # 获取图（带checkpointer）
-            graph = get_graph()
-            thread_id = get_thread_id(session_id)
+            accumulated_trace = []
+            final_response_text = ""
+            seen_response_text = ""
 
-            # 流式执行（使用thread_id持久化状态）
-            # 只传入新的 user_input，LangGraph 会自动从 checkpointer 恢复之前的状态
-            async for event in graph.astream_events(
-                {
-                    "user_input": request.message,
-                    "session_id": session_id,
-                    "user_id": str(request.user_id) if request.user_id is not None else None,
-                    "capabilities": request.capabilities.dict() if hasattr(request.capabilities, 'dict') else dict(request.capabilities),
-                },
-                config={"configurable": {"thread_id": thread_id}}
+            async for chunk in graph.astream(
+                invoke_input,
+                config={"configurable": {"thread_id": thread_id}},
+                stream_mode=["updates", "values"]
             ):
-                # 格式化事件
-                event_data = {
-                    "type": event.get("event", "unknown"),
-                    "name": event.get("name", "unknown"),
-                    "data": str(event.get("data", {}))[:200]
-                }
-                yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                stream_type, payload = chunk
+
+                if stream_type == "updates":
+                    # 每个节点完成后推送一次 response 事件
+                    # payload 是 {node_name: {agent_output: "...", execution_trace: [...]}} 这样的结构
+                    for node_name, node_output in payload.items():
+                        if not isinstance(node_output, dict):
+                            continue
+
+                        # 提取 response 文本
+                        response_text = (
+                            node_output.get("final_response") or
+                            node_output.get("agent_output") or
+                            ""
+                        )
+
+                        # 只在有新的响应内容时推送
+                        if response_text and response_text != seen_response_text:
+                            seen_response_text = response_text
+                            final_response_text = response_text
+                            yield f"event: response\ndata: {json.dumps({'content': response_text, 'node': node_name}, ensure_ascii=False)}\n\n"
+
+                        # 提取 execution_trace（如果此节点新增了轨迹）
+                        trace = node_output.get("execution_trace")
+                        if trace:
+                            new_traces = []
+                            for t in trace:
+                                if t not in accumulated_trace:
+                                    accumulated_trace.append(t)
+                                    new_traces.append(t)
+                            if new_traces:
+                                yield f"event: trace\ndata: {json.dumps({'traces': new_traces}, ensure_ascii=False)}\n\n"
+
+                            # 第一个节点完成后推送 accumulate 标记，让前端知道流程开始
+                            if log_stream_restore and new_traces:
+                                yield f"event: restore\ndata: {'{}'}\n\n"
+
+                elif stream_type == "values":
+                    # state 快照，可以用于提取更多信息（暂时不用）
+                    pass
+
+            # 流程结束，推送 done 事件
+            # 确保至少有一条 response
+            if not final_response_text:
+                # 如果上面没有从 updates 捕获到 response，从 values 的最后 state 里取
+                final_response_text = "处理完成"
+
+            yield f"event: done\ndata: {json.dumps({'response': final_response_text, 'session_id': session_id, 'execution_trace': accumulated_trace, 'intent': execution_trace_to_intent(accumulated_trace)}, ensure_ascii=False)}\n\n"
 
         except Exception as e:
-            error_data = {"error": str(e)}
-            yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+            import traceback
+            traceback.print_exc()
+            yield f"event: error\ndata: {json.dumps({'detail': str(e)}, ensure_ascii=False)}\n\n"
 
-    # 关键：设置正确的SSE响应头，防止Nginx缓冲
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -469,6 +509,20 @@ async def orchestrate_stream(request: OrchestrateRequest):
             "Connection": "keep-alive"
         }
     )
+
+
+def execution_trace_to_intent(trace: list) -> str:
+    """从 execution_trace 推断 intent 名称（供 done 事件返回给前端）"""
+    for t in trace:
+        if isinstance(t, dict) and t.get("node"):
+            node = t["node"]
+            if node == "supervisor":
+                return t.get("intent", "unknown")
+            if node.startswith("plan_"):
+                return "plan_creation"
+            if node in ("chat", "assistant", "rag"):
+                return node
+    return "unknown"
 
 
 @router.post("/cancel")
@@ -485,7 +539,7 @@ async def cancel_session(body: dict):
     thread_id = get_thread_id(session_id)
 
     # 1. 清除 ConversationState（内存中的任务状态）
-    from ..services.conversation_state import reset_conversation_state
+    from ..service.conversation_state import reset_conversation_state
     reset_conversation_state(session_id)
 
     # 2. 清除 LangGraph checkpoint（Redis 中的计划流程状态）
@@ -511,97 +565,3 @@ async def health_check():
         "service": "LangGraph Orchestrator",
         "version": "1.0.0"
     }
-
-
-@router.get("/conversations")
-async def list_conversations_endpoint(
-    user_id: str,
-    module: str = None,
-    limit: int = 20,
-    offset: int = 0
-):
-    """
-    获取会话列表（历史记录）
-
-    前端调用：GET /conversations?user_id={userId}&module=orchestrator
-    Java 网关转发：GET /api/ai/conversations -> Python /orchestrator/conversations
-
-    注意：当前端直接请求 Java 后端时，Java 会转发到 Python，但会把 user_id 重复传一次
-    (Java 后端自己从 JWT 解析 user_id，又从 URL 参数读取)
-    """
-    from ..dao.redis_dao import list_conversations
-
-    try:
-        conversations = list_conversations(
-            user_id=user_id,
-            module=module,
-            limit=limit,
-            offset=offset
-        )
-        print(f"[DEBUG] conversations: 返回 {len(conversations)} 个会话")
-        return {"conversations": conversations}
-    except Exception as e:
-        print(f"[ERROR] conversations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/conversations/{session_id}")
-async def get_conversation_detail(session_id: str):
-    """
-    获取单个会话的对话历史
-
-    前端调用：GET /conversations/{session_id}
-    Java 网关转发：GET /api/ai/conversations/{sessionId} -> Python /orchestrator/conversations/{session_id}
-    """
-    from ..dao.redis_dao import get_chat_history
-    try:
-        history = get_chat_history(session_id)
-        return {
-            "session_id": session_id,
-            "history": history,
-        }
-    except Exception as e:
-        print(f"[ERROR] get_conversation_detail: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/conversations/{session_id}")
-async def delete_conversation(session_id: str, user_id: str = "default"):
-    """
-    删除单个会话
-
-    前端调用：DELETE /conversations/{session_id}?user_id=xxx
-    """
-    from ..dao.redis_dao import clear_session, get_session
-    from ..services.conversation_state import reset_conversation_state
-
-    try:
-        # 清除内存中的状态
-        reset_conversation_state(session_id)
-
-        # 从 session 数据中获取真实 user_id（如果有的话）
-        session_data = get_session(session_id)
-        real_user_id = session_data.get('user_id', user_id) if session_data else user_id
-
-        # 清除 Redis 中的会话数据
-        result = clear_session(session_id)
-
-        # 清除 LangGraph checkpoint
-        thread_id = get_thread_id(session_id)
-        global _checkpointer
-        if _checkpointer and hasattr(_checkpointer, 'redis'):
-            key = f"ckpt:{thread_id}"
-            await _checkpointer.redis.delete(key)
-
-        # 清除短期记忆
-        from ..dao.redis_dao import get_redis_client
-        redis_client = get_redis_client()
-        if redis_client:
-            short_term_key = f"memory:short:{real_user_id}:{session_id}"
-            redis_client.delete(short_term_key)
-
-        print(f"[DEBUG] delete_conversation: 会话 {session_id} (user={real_user_id}) 已删除，含短期记忆")
-        return {"status": "deleted", "session_id": session_id}
-    except Exception as e:
-        print(f"[ERROR] delete_conversation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))

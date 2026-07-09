@@ -4,6 +4,7 @@ import com.planhub.dto.request.LoginRequest;
 import com.planhub.dto.request.RegisterRequest;
 import com.planhub.dto.response.ApiResponse;
 import com.planhub.dto.response.LoginResponse;
+import com.planhub.dto.response.UserPublicDTO;
 import com.planhub.entity.User;
 import com.planhub.service.AuthService;
 import com.planhub.service.UserService;
@@ -53,9 +54,9 @@ public class AuthController {
     }
 
     @GetMapping("/me")
-    public ResponseEntity<ApiResponse<User>> getCurrentUser(Authentication authentication) {
+    public ResponseEntity<ApiResponse<UserPublicDTO>> getCurrentUser(Authentication authentication) {
         Long userId = (Long) authentication.getPrincipal();
         User user = userService.findById(userId);
-        return ResponseEntity.ok(ApiResponse.success(user));
+        return ResponseEntity.ok(ApiResponse.success(UserPublicDTO.fromEntity(user)));
     }
 }

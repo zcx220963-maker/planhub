@@ -246,11 +246,6 @@ def _wrap_with_token_stats(base_llm, fallback_model):
             # 返回新的包装器，保持 token 统计功能
             return TokenStatsWrapper(bound_llm, self._fallback)
 
-        def with_structured_output(self, schema, **kwargs):
-            """结构化输出支持 - 透传给 primary LLM 并保持 token 统计"""
-            structured_llm = self._primary.with_structured_output(schema, **kwargs)
-            return TokenStatsWrapper(structured_llm, self._fallback)
-
         # 把未定义的属性访问交给 primary，避免破坏 langchain 的鸭子类型检查
         def __getattr__(self, item):
             return getattr(self._primary, item)

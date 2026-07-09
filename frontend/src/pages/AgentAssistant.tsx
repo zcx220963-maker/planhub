@@ -36,131 +36,6 @@ const AgentAssistant: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
-  // 检测 AI 消息是否处于计划生成引导流程
-  // 匹配多种确认引导语：
-  //   - plan_generator: "请点击确认，我将为您生成计划"
-  //   - plan_mode_confirm: "回复「是」开始制定，或回复「否」继续聊天"
-  //   - plan_mode_confirm: "你想制定一个关于什么的计划呢？"
-  const isPlanGuideMessage = (msg: Message) => {
-    if (msg.role !== 'assistant') return false;
-    const content = msg.content;
-    // plan_generator 引导语（含 "请点击确认"）
-    if (content.includes('请点击确认')) return true;
-    // plan_mode_confirm 引导语（意图确认阶段）
-    if (content.includes('开始制定') || content.includes('回复「是」')) return true;
-    // plan_mode_confirm 首次询问（"你想制定..." / "请问您想制定..."）
-    if (content.includes('关于什么的计划') || content.includes('关于什么计划')) return true;
-    return false;
-  };
-
-  // 点击「确认」超链接 → 直接向后端发送特殊指令进入计划确认
-  const handleConfirmPlan = async () => {
-    if (isLoading) return;
-    const userMessage: Message = {
-      id: `user_${Date.now()}`,
-      role: 'user',
-      content: '确认',
-      timestamp: new Date()
-    };
-    setMessages(prev => [...prev, userMessage]);
-    setIsLoading(true);
-    try {
-      const response = await agentApi.chat(
-        '__CONFIRM_PLAN__',
-        sessionId,
-        useRag,
-        usePlanMode
-      );
-      const assistantMessage: Message = {
-        id: `assistant_${Date.now()}`,
-        role: 'assistant',
-        content: response.response || '好的，正在为您生成计划...',
-        intent: response.intent,
-        trace: response.trace,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, assistantMessage]);
-    } catch (error: any) {
-      console.error('Agent API Error:', error);
-      const errorMessage: Message = {
-        id: `error_${Date.now()}`,
-        role: 'assistant',
-        content: `抱歉，发生了错误：${error.response?.data?.detail || error.message || '未知错误'}`,
-        intent: 'error',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // 渲染 AI 消息内容：如果处于计划引导流程，在末尾追加一个可点击的「确认」按钮
-  const renderAssistantContent = (msg: Message) => {
-    if (!isPlanGuideMessage(msg)) {
-      return msg.content;
-    }
-    // 匹配多种引导语中的可点击词，替换成超链接
-    // 优先级：确认 >「是」> 开始制定
-    const patterns = [
-      { regex: /确认/g, label: '确认' },
-      { regex: /「是」/g, label: '「是」' },
-      { regex: /开始制定/g, label: '开始制定' },
-    ];
-
-    for (const { regex, label } of patterns) {
-      if (regex.test(msg.content)) {
-        // 重置 lastIndex（因为 RegExp 带 g 标志会保存状态）
-        regex.lastIndex = 0;
-        const parts = msg.content.split(regex);
-        // split 后 parts.length-1 = 匹配次数，每段之间插入超链接
-        if (parts.length >= 2) {
-          const result: React.ReactNode[] = [];
-          result.push(<span key="0">{parts[0]}</span>);
-          for (let i = 1; i < parts.length; i++) {
-            result.push(
-              <a
-                key={`link_${i}`}
-                onClick={handleConfirmPlan}
-                style={{
-                  color: '#3b82f6',
-                  cursor: 'pointer',
-                  textDecoration: 'underline',
-                  fontWeight: 600
-                }}
-                title="点击确认进入下一步"
-              >
-                {label}
-              </a>
-            );
-            result.push(<span key={`text_${i}`}>{parts[i]}</span>);
-          }
-          return result;
-        }
-      }
-    }
-
-    // 兜底：如果文本里没有可匹配关键词但在 plan_guide 流程中，在末尾追加按钮
-    return (
-      <span>
-        {msg.content}
-        <a
-          onClick={handleConfirmPlan}
-          style={{
-            color: '#3b82f6',
-            cursor: 'pointer',
-            textDecoration: 'underline',
-            fontWeight: 600,
-            marginLeft: '4px'
-          }}
-          title="点击确认进入下一步"
-        >
-          [确认]
-        </a>
-      </span>
-    );
-  };
-
   const handleSendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
 
@@ -186,7 +61,7 @@ const AgentAssistant: React.FC = () => {
       const assistantMessage: Message = {
         id: `assistant_${Date.now()}`,
         role: 'assistant',
-        content: response.response || '抱歉，没有收到有效回复',
+        content: response.answer || '抱歉，没有收到有效回复',
         intent: response.intent,
         trace: response.trace,
         timestamp: new Date()
@@ -440,7 +315,7 @@ const AgentAssistant: React.FC = () => {
                 lineHeight: '1.6',
                 fontSize: '15px'
               }}>
-                {message.role === 'assistant' ? renderAssistantContent(message) : message.content}
+                {message.content}
               </div>
               <span style={{
                 fontSize: '12px',

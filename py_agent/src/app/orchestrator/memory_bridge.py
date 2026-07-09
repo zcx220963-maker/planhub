@@ -18,7 +18,7 @@ class MemoryBridge:
         # 使用同步 Redis 客户端
         from src.app.dao.redis_dao import redis_client
         self.redis = redis_client
-        self.short_term_ttl = 86400 * 7  # 7天过期
+        self.short_term_ttl = 7200  # 2小时过期
 
     def _get(self, key: str) -> Optional[str]:
         """同步获取值"""
@@ -98,51 +98,38 @@ class MemoryBridge:
         """
         从Redis加载记忆（异步接口，同步实现）
 
-        短期记忆只取最近 10 轮（20 条消息），减少 Token 消耗。
-        把 Redis 中的 dict 列表转换为 LangChain HumanMessage / AIMessage 对象，
-        这样每个节点可以直接按 messages 列表注入 LLM。
-
         Returns:
             {
-                "short_term_memory": [HumanMessage, AIMessage, ...],
+                "short_term_memory": [...],
                 "user_preference": "...",
                 "working_memory": {...}
             }
         """
         try:
-            # 短期记忆（最多取最近 20 条 = 10 轮对话）
-            key = f"memory:short:{user_id}:{session_id}"
+            # 获取短期记忆
+            key = f"memory:short:{session_id}"
             messages = self._lrange(key, 0, -1)
-            all_messages = [json.loads(m) for m in messages] if messages else []
-            # 只取最近 10 轮（20 条消息）
-            recent = all_messages[-20:] if len(all_messages) > 20 else all_messages
+            short_term = [json.loads(m) for m in messages] if messages else []
 
-            # 转为 LangChain 消息对象（按 LangChain 标准 messages 格式）
-            from langchain_core.messages import HumanMessage, AIMessage
-            short_term: list = []
-            for msg in recent:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                if not content:
-                    continue
-                if role == "user":
-                    short_term.append(HumanMessage(content=content))
-                elif role == "assistant":
-                    short_term.append(AIMessage(content=content))
-                # 忽略 system / tool 等其它 role
-
-            # 用户偏好
+            # 获取用户偏好
             pref_key = f"memory:pref:{user_id or 'anonymous'}"
             user_pref = self._get(pref_key) or ""
+
+            # 获取工作记忆
+            work_key = f"memory:working:{session_id}"
+            work_data = self._get(work_key)
+            working = json.loads(work_data) if work_data else {}
 
             return {
                 "short_term_memory": short_term,
                 "user_preference": user_pref,
+                "working_memory": working
             }
         except Exception as e:
             return {
                 "short_term_memory": [],
                 "user_preference": None,
+                "working_memory": None
             }
 
     async def save_memory(
@@ -151,6 +138,7 @@ class MemoryBridge:
         user_id: Optional[str],
         chat_history: list,
         user_preference: Optional[str] = None,
+        working_memory: Optional[Dict[str, Any]] = None
     ):
         """
         保存记忆到Redis（异步接口，同步实现）
@@ -158,7 +146,7 @@ class MemoryBridge:
         try:
             # 保存短期记忆
             if chat_history:
-                key = f"memory:short:{user_id}:{session_id}"
+                key = f"memory:short:{session_id}"
                 # chat_history 可能是 list of dict，需要转换
                 for item in chat_history:
                     if isinstance(item, dict):
@@ -168,6 +156,11 @@ class MemoryBridge:
             if user_preference and user_id:
                 pref_key = f"memory:pref:{user_id}"
                 self._set(pref_key, user_preference)
+
+            # 保存工作记忆
+            if working_memory:
+                work_key = f"memory:working:{session_id}"
+                self._set(work_key, json.dumps(working_memory, ensure_ascii=False), ex=3600)
 
         except Exception as e:
             pass

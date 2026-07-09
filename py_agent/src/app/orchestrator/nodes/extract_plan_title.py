@@ -74,14 +74,9 @@ async def extract_plan_title_node(state) -> dict:
         if not title or len(title) < 2:
             title = type_names.get(plan_type, "我的计划")
 
-    # 记忆透传
-    short_term = state.get("short_term_memory", [])
-    long_term = state.get("long_term_memory", [])
     return {
         "plan_title": title,
         "plan_text_cache": plan_text,
-        "short_term_memory": short_term,
-        "long_term_memory": long_term,
         "execution_trace": [
             {
                 "node": "extract_plan_title",

@@ -44,41 +44,21 @@ async def plan_mode_confirm_node(state) -> dict:
     print(f"[DEBUG] plan_mode_confirm: has_asked_before={has_asked_before}, user_input={user_input}")
     print(f"[DEBUG] plan_mode_confirm: original_user_input={original_user_input}")
     
-    # 记忆透传辅助
-    short_term = state.get("short_term_memory", [])
-    long_term = state.get("long_term_memory", [])
-    def _wm(d: dict) -> dict:
-        d.setdefault("short_term_memory", short_term)
-        d.setdefault("long_term_memory", long_term)
-        return d
-
-    # 只有点击超链接发送的 __CLICK_CONFIRM__ 才算确认
-    if user_input == "__CLICK_CONFIRM__":
-        return _wm({
-            "final_response": f"好的，开始为您制定{plan_type_name}！",
-            "agent_output": f"好的，开始为您制定{plan_type_name}！",
-            "selected_agent": "plan_collector",
-            "plan_type": intent,
-            "waiting_for_plan_mode_confirm": False,
-            "execution_trace": [
-                {
-                    "node": "plan_mode_confirm",
-                    "action": "confirmed",
-                    "plan_type": intent,
-                    "plan_type_name": plan_type_name,
-                    "source": "frontend_link"
-                }
-            ]
-        })
-
-    # 如果之前已经询问过，检查用户是否点击了超链接确认
+    # 如果之前已经询问过，检查用户的回复
     if has_asked_before and user_input:
-        # 只有 __CLICK_CONFIRM__ 才算确认，普通文字"确认"不算
-        if user_input == "__CLICK_CONFIRM__":
-            return _wm({
+        confirm_keywords = ["是", "确认", "好的", "可以", "开启", "开始", "想", "要"]
+        reject_keywords = ["否", "不", "算了", "取消", "不用", "结束", "不要"]
+        
+        is_confirm = any(keyword in user_input for keyword in confirm_keywords)
+        is_reject = any(keyword in user_input for keyword in reject_keywords)
+        
+        print(f"[DEBUG] plan_mode_confirm: is_confirm={is_confirm}, is_reject={is_reject}")
+        
+        if is_confirm:
+            return {
                 "final_response": f"好的，开始为您制定{plan_type_name}！",
                 "agent_output": f"好的，开始为您制定{plan_type_name}！",
-                "selected_agent": "plan_collector",
+                "selected_agent": "plan_generator",
                 "plan_type": intent,
                 "waiting_for_plan_mode_confirm": False,
                 "execution_trace": [
@@ -89,28 +69,46 @@ async def plan_mode_confirm_node(state) -> dict:
                         "plan_type_name": plan_type_name
                     }
                 ]
-            })
-        else:
-            # 用户说的是普通对话，不触发确认，把消息交给 chat 节点处理
-            return _wm({
-                "intent": "chat",
-                "chat_override_input": user_input,
+            }
+        elif is_reject:
+            # 用户拒绝，把原始问题保存到 chat_input，路由到 chat 直接回答
+            # 注意：不修改 user_input，保持对话历史一致性
+            print(f"[DEBUG] plan_mode_confirm: User rejected, routing to chat with original question")
+            return {
+                "intent": "chat",  # 更新意图为 chat
+                "chat_override_input": original_user_input,  # chat 节点用这个来回答
                 "selected_agent": "chat",
-                "waiting_for_plan_mode_confirm": True,
-                "original_user_input": original_user_input,
+                "waiting_for_plan_mode_confirm": False,
+                "original_user_input": "",  # 清空
                 "execution_trace": [
                     {
                         "node": "plan_mode_confirm",
-                        "action": "chat_fallback",
+                        "action": "rejected",
                         "plan_type": intent,
-                        "reason": "用户输入不是点击确认，转为普通对话"
+                        "plan_type_name": plan_type_name,
+                        "original_question": original_user_input,
+                        "reason": "用户拒绝计划模式，用原始问题路由到 chat"
                     }
                 ]
-            })
+            }
+        else:
+            # 回复不明确，重新询问
+            return {
+                "agent_output": f"好的，请问您想制定{plan_type_name}吗？请回复「是」开始制定，或回复「否」继续聊天。",
+                "waiting_for_plan_mode_confirm": True,
+                "original_user_input": original_user_input,  # 保留原始问题
+                "execution_trace": [
+                    {
+                        "node": "plan_mode_confirm",
+                        "action": "re_ask",
+                        "plan_type": intent
+                    }
+                ]
+            }
     
     # 首次进入此节点，直接询问确认（不检查用户输入）
-    return _wm({
-        "agent_output": f"好的，请问您想制定{plan_type_name}吗？请点击「确认」开始制定。",
+    return {
+        "agent_output": f"好的，请问您想制定{plan_type_name}吗？请回复「是」开始制定，或回复「否」继续聊天。",
         "waiting_for_plan_mode_confirm": True,
         "original_user_input": original_user_input,  # 保存原始问题
         "execution_trace": [
@@ -121,4 +119,4 @@ async def plan_mode_confirm_node(state) -> dict:
                 "plan_type_name": plan_type_name
             }
         ]
-    })
+    }
