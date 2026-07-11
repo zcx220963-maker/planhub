@@ -21,10 +21,44 @@ async def plan_confirmation_node(state) -> dict:
     
     print(f"[DEBUG] plan_confirmation: plan_text length={len(plan_text)}, waiting_for_confirmation={waiting_for_confirmation}, user_input={user_input}")
     
+    CONFIRM_KEYWORDS = ["是", "确认", "yes", "ok", "好", "创建", "要", "可以", "没问题", "对", "没错", "行", "开始"]
+    REJECT_KEYWORDS = ["否", "no", "不", "跳过", "取消", "不要", "不用", "算了", "结束"]
+
+    def _clean_plan_text(text: str) -> str:
+        import re
+        text = re.sub(r'^.*?计划已[生成修改]！\s*\n', '', text, flags=re.DOTALL)
+        text = re.sub(r'\n\n__DATA_SOURCES__[\s\S]*?__END_DATA_SOURCES__', '', text)
+        text = re.sub(r'\n\s*---\s*\n\s*是否要将此计划创建到 PlanHub 平台[\s\S]*$', '', text)
+        text = re.sub(r'\n\s*---\s*\n\s*是否要将此计划创建到 planhub 平台[\s\S]*$', '', text)
+        return text.strip()
+
     # 如果已经询问过，处理用户回复
     if waiting_for_confirmation:
-        # 用户确认创建
-        if user_input in ["是", "确认", "yes", "ok", "好", "创建", "要", "可以", "没问题"]:
+        # 用户修改计划
+        if user_input.startswith("__modify_plan__:"):
+            modified_plan_raw = user_input[len("__modify_plan__:"):]
+            modified_plan = _clean_plan_text(modified_plan_raw)
+            print(f"[DEBUG] plan_confirmation: user modified plan, raw length={len(modified_plan_raw)}, clean length={len(modified_plan)}")
+            display_plan = modified_plan
+            confirmation_question = f" 计划已修改！\n\n{display_plan}\n\n---\n\n是否要将此计划创建到 PlanHub 平台？\n\n创建到平台后，您可以：\n-  在平台上查看和管理计划\n-  进行每日打卡\n-  追踪进度\n\n请点击下方按钮选择。"
+            return {
+                "agent_output": confirmation_question,
+                "waiting_for_plan_confirmation": True,
+                "plan_text_cache": modified_plan,
+                "plan_type": state.get("plan_type"),
+                "plan_info": state.get("plan_info", {}),
+                "execution_trace": [
+                    {
+                        "node": "plan_confirmation",
+                        "action": "plan_modified",
+                        "plan_text_length": len(modified_plan),
+                        "success": True
+                    }
+                ]
+            }
+
+        # 用户确认创建（仅按钮点击）
+        if user_input.strip() == "__click_confirm__":
             print(f"[DEBUG] plan_confirmation: user confirmed, plan_text length={len(plan_text)}")
             return {
                 "user_confirmed_create": True,
@@ -40,11 +74,14 @@ async def plan_confirmation_node(state) -> dict:
                 ]
             }
         
-        # 用户拒绝创建
-        elif user_input in ["否", "no", "不", "跳过", "取消", "不要", "不用"]:
+        # 用户拒绝创建（仅按钮点击）
+        elif user_input.strip() == "__click_reject__":
             return {
-                "final_response": plan_text,
-                "agent_output": plan_text,
+                "final_response": "已取消计划创建，您可以重新发起新的计划需求。",
+                "agent_output": "已取消计划创建，您可以重新发起新的计划需求。",
+                "plan_text_cache": None,
+                "waiting_for_plan_confirmation": False,
+                "plan_generated": False,
                 "execution_trace": [
                     {
                         "node": "plan_confirmation",
@@ -84,7 +121,7 @@ async def plan_confirmation_node(state) -> dict:
 -  进行每日打卡
 -  追踪进度
 
-请回复「是」或「确认」来创建，或回复「否」跳过。
+请点击下方按钮选择。
 """
             return {
                 "agent_output": confirmation_question,
@@ -113,15 +150,38 @@ async def plan_confirmation_node(state) -> dict:
                 ]
             }
         
-        # 构建确认询问
-        # 展示计划摘要，太长时截断
-        display_plan = plan_text[:1000] if len(plan_text) > 1000 else plan_text
-        if len(plan_text) > 1000:
-            display_plan += "\n\n...(计划过长已截断，完整计划将保存到平台)"
+        # 构建确认询问（完整展示计划 + 数据来源）
+        display_plan = plan_text
+
+        # 附加工具调用和文档检索信息（供前端展示，不保存到平台）
+        tool_data_parts = state.get("tool_data_parts", [])
+        doc_data_parts = state.get("doc_data_parts", [])
+        tool_success_count = state.get("tool_success_count", 0)
+        tool_total_count = state.get("tool_total_count", 0)
+        tool_fail_log = state.get("tool_fail_log", [])
+
+        data_source_section = ""
+        if tool_data_parts or doc_data_parts:
+            data_source_section = "\n\n__DATA_SOURCES__\n"
+            if tool_data_parts:
+                data_source_section += f"__TOOL_DATA__\n"
+                for part in tool_data_parts:
+                    data_source_section += part + "\n"
+            if tool_fail_log:
+                data_source_section += f"__TOOL_FAILS__\n"
+                for fail in tool_fail_log:
+                    data_source_section += f"{fail.get('tool', '')}: {fail.get('error', '')}\n"
+            if doc_data_parts:
+                data_source_section += f"__DOC_DATA__\n"
+                for part in doc_data_parts:
+                    data_source_section += part + "\n"
+            data_source_section += "__END_DATA_SOURCES__"
+
         confirmation_question = f"""
  计划已生成！
 
 {display_plan}
+{data_source_section}
 
 ---
 
@@ -132,7 +192,7 @@ async def plan_confirmation_node(state) -> dict:
 -  进行每日打卡
 -  追踪进度
 
-请回复「是」或「确认」来创建，或回复「否」跳过。
+请点击下方按钮选择。
 """
         
         return {

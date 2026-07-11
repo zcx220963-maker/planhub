@@ -16,6 +16,20 @@ PlanHub AI 服务 - 应用入口
 
 import sys
 import os
+import io
+
+# ── Windows 控制台编码修复 ──────────────────────────────────
+# Windows 默认控制台编码为 GBK，遇到 AI 回复中的 emoji (👋🌟) 时
+# print() 会抛出 OSError: [Errno 22] Invalid argument，导致 500。
+# 强制将 stdout/stderr 设为 UTF-8 编码可彻底解决。
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    else:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 # 将项目根目录和 src 目录添加到 Python 路径
 # 这样 config.py 在根目录，app 在 src/ 目录
@@ -31,8 +45,6 @@ from config import settings
 from src.app.dao.redis_dao import init_redis, get_redis_client
 
 # 导入路由
-from src.app.api.chat import router as chat_router
-from src.app.api.assistant import router as assistant_router
 from src.app.api.rag import router as rag_router
 from src.app.api.conversations import router as conversation_router
 from src.app.api.orchestrator import router as orchestrator_router  # LangGraph 统一入口
@@ -107,8 +119,6 @@ async def internal_auth_middleware(request: Request, call_next):
 
 
 # 注册路由（类似 @RequestMapping）
-app.include_router(chat_router)
-app.include_router(assistant_router)
 app.include_router(rag_router)
 app.include_router(conversation_router)
 app.include_router(orchestrator_router)  # LangGraph 统一入口
@@ -152,8 +162,6 @@ async def root():
         "version": "1.1.0",
         "security_note": "此服务仅接受 Java 后端的内部请求，外部直接访问将被拒绝",
         "endpoints": {
-            "chat": "/chat",
-            "assistant": "/assistant",
             "rag": "/rag",
             "conversations": "/conversations",
             "orchestrator": "/orchestrator (LangGraph统一入口)"

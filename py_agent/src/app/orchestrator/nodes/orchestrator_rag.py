@@ -58,7 +58,7 @@ async def rag_node(state) -> dict:
             })
 
         # 使用 app.api.rag 中的 query_rag_internal 函数
-        from src.app.api.rag_api import query_rag_internal
+        from src.app.api.rag import query_rag_internal
 
         # 执行查询（只在选中文档中）
         user_input = state.get("user_input", "")

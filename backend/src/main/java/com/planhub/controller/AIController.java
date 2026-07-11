@@ -14,6 +14,7 @@ import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 
@@ -137,13 +138,27 @@ public class AIController {
     }
 
     /**
-     * 转发 GET 请求
+     * 转发 GET 请求（ authentication 可传 null，此时使用 fallbackUserId）
      */
     private ResponseEntity<Map<String, Object>> forwardGet(String path, Authentication authentication, HttpServletRequest request) {
-        String userId = getCurrentUserId(authentication);
+        return forwardGet(path, authentication, null, request);
+    }
+
+    /**
+     * 转发 GET 请求（internalUserId 优先，不重复追加）
+     */
+    private ResponseEntity<Map<String, Object>> forwardGet(String path, Authentication authentication, String internalUserId, HttpServletRequest request) {
+        String userId = (internalUserId != null && !internalUserId.isEmpty())
+                ? internalUserId
+                : getCurrentUserId(authentication);
         String url = aiServiceConfig.getAiServiceUrl() + path;
+
         // 将 user_id 作为 query param 传递给 Python（Python 端从 query param 读取）
-        if (url.contains("?")) {
+        // 但如果 URL 里已经有 user_id 参数了（调用方手动传了 internalUserId 且已拼入 path），就不要再追加
+        String lowerUrl = url.toLowerCase();
+        if (lowerUrl.contains("user_id=")) {
+            // 已有 user_id，跳过追加
+        } else if (url.contains("?")) {
             url += "&user_id=" + userId;
         } else {
             url += "?user_id=" + userId;
@@ -252,6 +267,7 @@ public class AIController {
 
         log.debug("转发流式对话 (WebClient): userId={}", userId);
 
+        // DataBuffer 透传原始字节，避免按 \n 切割破坏 SSE 事件边界
         Flux<byte[]> flux = aiWebClient.post()
                 .uri("/chat/stream")
                 .header(secretHeader, secretValue)
@@ -260,8 +276,17 @@ public class AIController {
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .bodyValue(body)
                 .retrieve()
-                .bodyToFlux(String.class)
-                .map(line -> (line + "\n").getBytes(StandardCharsets.UTF_8))
+                .bodyToFlux(org.springframework.core.io.buffer.DataBuffer.class)
+                .flatMap(dataBuffer -> {
+                    try {
+                        int len = dataBuffer.readableByteCount();
+                        byte[] bytes = new byte[len];
+                        dataBuffer.read(bytes);
+                        return Flux.just(bytes);
+                    } finally {
+                        org.springframework.core.io.buffer.DataBufferUtils.release(dataBuffer);
+                    }
+                })
                 .onErrorResume(WebClientResponseException.class, e -> {
                     log.error("AI 服务返回错误: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
                     return Flux.just(sseErrorMessage("AI 服务错误: " + e.getStatusCode()));
@@ -522,10 +547,14 @@ public class AIController {
     }
 
     /**
-     * LangGraph 编排 — SSE 流式透传（WebClient + Flux）
+     * LangGraph 编排 — SSE 流式透传（WebClient + ResponseBodyEmitter）
+     *
+     * 使用 ResponseBodyEmitter 直接在 Servlet 输出流写字节，
+     * 避免 Spring 对 Flux&lt;byte[]&gt; 的序列化（会把字节数组序列化成 JSON base64），
+     * 同时避免 bodyToFlux(String.class) 按 \n 切割破坏 SSE 事件边界。
      */
     @PostMapping("/orchestrator/stream")
-    public ResponseEntity<Flux<byte[]>> orchestrateStream(
+    public ResponseEntity<ResponseBodyEmitter> orchestrateStream(
             @RequestBody Map<String, Object> body,
             Authentication authentication,
             HttpServletRequest request) {
@@ -539,7 +568,10 @@ public class AIController {
 
         log.debug("转发 LangGraph 流式编排 (WebClient): userId={}", userId);
 
-        Flux<byte[]> flux = aiWebClient.post()
+        ResponseBodyEmitter emitter = new ResponseBodyEmitter(300_000L);
+
+        // 异步订阅 Python 流，逐块写入 emitter
+        aiWebClient.post()
                 .uri("/orchestrator/stream")
                 .header(secretHeader, secretValue)
                 .header("Authorization", "Bearer " + jwtToken)
@@ -547,23 +579,43 @@ public class AIController {
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .bodyValue(body)
                 .retrieve()
-                .bodyToFlux(String.class)
-                .map(line -> (line + "\n").getBytes(StandardCharsets.UTF_8))
-                .onErrorResume(WebClientResponseException.class, e -> {
-                    log.error("LangGraph 编排服务返回错误: {} - {}", e.getStatusCode(), e.getResponseBodyAsString());
-                    return Flux.just(sseErrorMessage("AI 编排服务错误: " + e.getStatusCode()));
-                })
-                .onErrorResume(Exception.class, e -> {
-                    log.error("LangGraph 流式编排异常: {}", e.getMessage());
-                    return Flux.just(sseErrorMessage("抱歉，AI 编排服务暂时不可用，请稍后重试。"));
-                });
+                .bodyToFlux(org.springframework.core.io.buffer.DataBuffer.class)
+                .subscribe(
+                        dataBuffer -> {
+                            try {
+                                int len = dataBuffer.readableByteCount();
+                                byte[] bytes = new byte[len];
+                                dataBuffer.read(bytes);
+                                emitter.send(bytes, MediaType.TEXT_EVENT_STREAM);
+                            } catch (Exception e) {
+                                log.error("发送 SSE 数据块失败: {}", e.getMessage());
+                                try { emitter.completeWithError(e); } catch (Exception ignore) {}
+                            } finally {
+                                org.springframework.core.io.buffer.DataBufferUtils.release(dataBuffer);
+                            }
+                        },
+                        error -> {
+                            log.error("LangGraph 流式编排错误: {}", error.getMessage());
+                            try {
+                                emitter.send(
+                                    sseErrorMessage("抱歉，AI 编排服务暂时不可用，请稍后重试。"),
+                                    MediaType.TEXT_EVENT_STREAM);
+                                emitter.complete();
+                            } catch (Exception e3) {
+                                try { emitter.completeWithError(error); } catch (Exception ignore) {}
+                            }
+                        },
+                        () -> {
+                            try { emitter.complete(); } catch (Exception ignore) {}
+                        }
+                );
 
         return ResponseEntity.ok()
                 .contentType(MediaType.TEXT_EVENT_STREAM)
                 .cacheControl(CacheControl.noCache())
                 .header("X-Accel-Buffering", "no")
                 .header("Connection", "keep-alive")
-                .body(flux);
+                .body(emitter);
     }
 
     @GetMapping("/orchestrator/health")
@@ -590,15 +642,18 @@ public class AIController {
             @RequestParam(defaultValue = "0") int offset,
             Authentication authentication,
             HttpServletRequest request) {
-        
+
         // 从 JWT 中获取 user_id，如果前端没传的话
         String actualUserId = (user_id != null && !user_id.isEmpty()) ? user_id : getCurrentUserId(authentication);
-        
-        String path = "/conversations?user_id=" + actualUserId + 
-                      (module != null ? "&module=" + module : "") + 
-                      "&limit=" + limit + "&offset=" + offset;
-        
-        return forwardGet(path, authentication, request);
+
+        // 注意：forwardGet 会自动追加 user_id，所以这里不要再放 user_id
+        StringBuilder path = new StringBuilder("/conversations?limit=" + limit + "&offset=" + offset);
+        if (module != null && !module.isEmpty()) {
+            path.append("&module=").append(module);
+        }
+        // forwardGet 会在后面统一追加 &user_id=xxx，保证不重复
+
+        return forwardGet(path.toString(), authentication, actualUserId, request);
     }
 
     @GetMapping("/conversations/{sessionId}")

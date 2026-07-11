@@ -1,7 +1,28 @@
 import redis
 import json
+import logging
+import sys
 from datetime import datetime
 from config import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_print(*args, **kwargs):
+    """安全打印：避免 Windows GBK 控制台遇到 emoji (👋🌟) 时抛 [Errno 22]
+
+    与内置 print() 完全兼容：支持多参数、sep/end/flush 关键字。
+    """
+    builtins_print = __builtins__["print"] if isinstance(__builtins__, dict) else getattr(__builtins__, "print")
+    try:
+        builtins_print(*args, **kwargs)
+    except (UnicodeEncodeError, OSError):
+        try:
+            fallback = " ".join(str(a) for a in args) + "\n"
+            sys.stderr.write(fallback.encode("ascii", errors="replace").decode("ascii"))
+        except Exception:
+            pass
+
 
 # 初始化 Redis 连接（兼容旧版本 Redis）
 redis_client = redis.Redis(
@@ -22,21 +43,21 @@ def init_redis():
     try:
         # 使用 PING 命令测试连接（兼容所有 Redis 版本）
         redis_client.ping()
-        print(" Redis 连接成功")
+        _safe_print(" Redis 连接成功")
         return True
     except redis.exceptions.ConnectionError as e:
-        print(f" Redis 连接失败: {e}")
-        print("  请检查：")
-        print("  1. Redis 服务是否已启动")
-        print("  2. Redis 端口是否正确（默认 6379）")
-        print("  3. Redis 是否需要密码")
+        _safe_print(f" Redis 连接失败: {e}")
+        _safe_print("  请检查：")
+        _safe_print("  1. Redis 服务是否已启动")
+        _safe_print("  2. Redis 端口是否正确（默认 6379）")
+        _safe_print("  3. Redis 是否需要密码")
         return False
     except redis.exceptions.ResponseError as e:
         # 旧版本 Redis 可能不支持某些命令
-        print(f" Redis 版本兼容性问题: {e}")
+        _safe_print(f" Redis 版本兼容性问题: {e}")
         return False
     except Exception as e:
-        print(f" Redis 未知错误: {e}")
+        _safe_print(f" Redis 未知错误: {e}")
         return False
 
 
@@ -86,7 +107,7 @@ def save_session(session_id, session_data, expire_seconds=86400, user_id=None, m
         
         return True
     except Exception as e:
-        print("Save session failed:", e)
+        _safe_print("Save session failed:", e)
         return False
 
 
@@ -99,7 +120,7 @@ def get_session(session_id):
             return json.loads(data)
         return None
     except Exception as e:
-        print("Get session failed:", e)
+        _safe_print("Get session failed:", e)
         return None
 
 
@@ -135,7 +156,7 @@ def clear_session(session_id):
             redis_client.delete("conversation:" + session_id)
             return True
         except Exception as e:
-            print("Clear session failed:", e)
+            _safe_print("Clear session failed:", e)
             return False
     return False
 
@@ -150,7 +171,7 @@ def list_conversations(user_id=None, limit=20, offset=0, module=None):
         
         keys = redis_client.keys(pattern)
         keys.sort(reverse=True)
-        print(f"[DEBUG] list_conversations: 找到 {len(keys)} 个 keys")
+        _safe_print(f"[DEBUG] list_conversations: 找到 {len(keys)} 个 keys")
         
         # 先获取所有对话
         all_conversations = []
@@ -162,7 +183,7 @@ def list_conversations(user_id=None, limit=20, offset=0, module=None):
                     # 直接使用完整的 session_id 格式
                     conv["session_id"] = key.replace("session:", "")
                     
-                    print(f"[DEBUG] 处理 key={key}, module={conv.get('module')}, user_id={conv.get('user_id')}")
+                    _safe_print(f"[DEBUG] 处理 key={key}, module={conv.get('module')}, user_id={conv.get('user_id')}")
                     
                     # 兼容旧数据：从 key 推断 module 和 user_id
                     if not conv.get("module"):
@@ -175,7 +196,7 @@ def list_conversations(user_id=None, limit=20, offset=0, module=None):
                     
                     # 在内存中过滤
                     if module and conv.get("module") != module:
-                        print(f"[DEBUG] 过滤: module 不匹配, conv.module={conv.get('module')}, 请求 module={module}")
+                        _safe_print(f"[DEBUG] 过滤: module 不匹配, conv.module={conv.get('module')}, 请求 module={module}")
                         continue
                     if user_id:
                         # 如果有 user_id 但 conv 没有，尝试推断或暂不筛选
@@ -185,9 +206,9 @@ def list_conversations(user_id=None, limit=20, offset=0, module=None):
                             if len(session_parts) >= 2:
                                 conv["user_id"] = session_parts[1]
                         # 如果还是没有 user_id，我们暂不筛选，先让旧数据能显示出来
-                        print(f"[DEBUG] user_id 比较: conv.user_id={conv.get('user_id')}, 请求 user_id={user_id}")
+                        _safe_print(f"[DEBUG] user_id 比较: conv.user_id={conv.get('user_id')}, 请求 user_id={user_id}")
                         if conv.get("user_id") and str(conv.get("user_id", "")) != str(user_id):
-                            print(f"[DEBUG] 过滤: user_id 不匹配")
+                            _safe_print(f"[DEBUG] 过滤: user_id 不匹配")
                             continue
                     
                     if conv.get("history"):
@@ -201,10 +222,10 @@ def list_conversations(user_id=None, limit=20, offset=0, module=None):
                         conv["first_message"] = ""
                         conv["message_count"] = 0
                     
-                    print(f"[DEBUG] 添加会话: {conv['session_id']}")
+                    _safe_print(f"[DEBUG] 添加会话: {conv['session_id']}")
                     all_conversations.append(conv)
                 except Exception as e:
-                    print(f"Parse conversation {key} failed:", e)
+                    _safe_print(f"Parse conversation {key} failed:", e)
                     continue
         
         # 按更新时间排序（最新的在前）
@@ -215,10 +236,10 @@ def list_conversations(user_id=None, limit=20, offset=0, module=None):
         end = offset + limit
         conversations = all_conversations[start:end]
         
-        print(f"[DEBUG] 最终返回 {len(conversations)} 个会话")
+        _safe_print(f"[DEBUG] 最终返回 {len(conversations)} 个会话")
         return conversations
     except Exception as e:
-        print("List conversations failed:", e)
+        _safe_print("List conversations failed:", e)
         return []
 
 
@@ -258,7 +279,7 @@ def get_conversation_count(user_id=None, module=None):
         
         return count
     except Exception as e:
-        print("Get conversation count failed:", e)
+        _safe_print("Get conversation count failed:", e)
         return 0
 
 
@@ -308,5 +329,5 @@ def search_conversations(keyword, user_id=None, limit=20):
         
         return sorted(results, key=lambda x: x.get("updated_at", ""), reverse=True)
     except Exception as e:
-        print("Search conversations failed:", e)
+        _safe_print("Search conversations failed:", e)
         return []

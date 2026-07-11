@@ -9,10 +9,13 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import jakarta.annotation.PostConstruct;
 
 @Configuration
 @EnableWebSecurity
@@ -23,6 +26,17 @@ public class SecurityConfig {
 
     public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
         this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    }
+
+    /**
+     * 关键：SSS 流式返回 Flux 时，Spring MVC 会切换线程写响应。
+     * 默认 SecurityContextHolder 是 ThreadLocal，新线程拿不到认证信息，
+     * SecurityContextHolderFilter 二次过滤时就返回 403。
+     * 改为 InheritableThreadLocal 让异步线程也能拿到认证上下文。
+     */
+    @PostConstruct
+    public void enableAsyncSecurityContext() {
+        SecurityContextHolder.setStrategyName(SecurityContextHolder.MODE_INHERITABLETHREADLOCAL);
     }
 
     @Bean
@@ -83,6 +97,9 @@ public class SecurityConfig {
                 // 聊天：需要认证
                 .requestMatchers("/api/chat/**").authenticated()
 
+                // AI 健康检查：公开（不泄露敏感信息）—— 必须放在 /api/ai/** 之前！
+                .requestMatchers("/api/ai/health", "/api/ai/orchestrator/health", "/api/ai/assistant/health").permitAll()
+
                 // AI 服务：需要认证
                 .requestMatchers("/api/ai/**").authenticated()
 
@@ -91,9 +108,6 @@ public class SecurityConfig {
 
                 // 静态上传文件：公开（用于展示图片）
                 .requestMatchers("/uploads/**").permitAll()
-
-                // AI 健康检查：公开（不泄露敏感信息）
-                .requestMatchers("/api/ai/health", "/api/ai/orchestrator/health", "/api/ai/assistant/health").permitAll()
 
                 // 其余接口默认需要认证
                 .anyRequest().authenticated()

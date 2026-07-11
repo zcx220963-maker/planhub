@@ -445,6 +445,37 @@ export const planAssistantApi = {
     return response.data;
   },
 
+  /**
+   * 流式编排 — 返回 ReadableStream 供前端消费 SSE
+   * 后端 Java /api/ai/orchestrator/stream 本身是 Flux<byte[]>
+   * 前端通过 fetch + getReader() 拿到原始字节流
+   */
+  chatStream: async (
+    message: string,
+    sessionId?: string,
+    userId?: string | number,
+    docIds?: string[]
+  ): Promise<{ body: ReadableStream<Uint8Array>; status: number }> => {
+    const token = localStorage.getItem('token') || '';
+    const res = await fetch(`${API_BASE_URL}/ai/orchestrator/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: token ? `Bearer ${token}` : '',
+      },
+      body: JSON.stringify({
+        message,
+        session_id: sessionId || undefined,
+        user_id: userId || undefined,
+        doc_ids: docIds && docIds.length > 0 ? docIds : undefined,
+      }),
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`流式请求失败: ${res.status}`);
+    }
+    return { body: res.body, status: res.status };
+  },
+
   assistant: async (query: string): Promise<{ response: string }> => {
     const response = await api.post('/ai/assistant', { query });
     return response.data;

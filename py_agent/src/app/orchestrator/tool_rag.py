@@ -687,14 +687,29 @@ def _get_tool_vector_store() -> Chroma:
         existing = store.get()
         if not existing or not existing.get("ids"):
             ids = [f"tool_{i}" for i in range(len(TOOL_DOCS))]
-            store.add_documents(documents=TOOL_DOCS, ids=ids)
+            # Chroma 不允许 metadata 的 list 类型为空，需要填充占位符
+            normalized_docs = []
+            for doc in TOOL_DOCS:
+                meta = dict(doc.metadata)
+                for key in ["required_slots", "optional_slots", "triggers"]:
+                    if key in meta and isinstance(meta[key], list) and len(meta[key]) == 0:
+                        meta[key] = ["_none_"]
+                normalized_docs.append(Document(page_content=doc.page_content, metadata=meta))
+            store.add_documents(documents=normalized_docs, ids=ids)
             print(f"[Tool RAG] 初始化 {len(TOOL_DOCS)} 个工具文档到向量库")
     except Exception as e:
         print(f"[WARN] Tool RAG 初始化失败: {e}")
         # 尝试直接添加
         try:
             ids = [f"tool_{i}" for i in range(len(TOOL_DOCS))]
-            store.add_documents(documents=TOOL_DOCS, ids=ids)
+            normalized_docs = []
+            for doc in TOOL_DOCS:
+                meta = dict(doc.metadata)
+                for key in ["required_slots", "optional_slots", "triggers"]:
+                    if key in meta and isinstance(meta[key], list) and len(meta[key]) == 0:
+                        meta[key] = ["_none_"]
+                normalized_docs.append(Document(page_content=doc.page_content, metadata=meta))
+            store.add_documents(documents=normalized_docs, ids=ids)
         except Exception:
             pass
 
@@ -895,12 +910,16 @@ async def _llm_rerank(query: str, candidates: List[Dict[str, Any]], top_k: int =
 
 
 def _format_tool_result(doc: Document, score: float = 0.0) -> Dict[str, Any]:
-    """格式化工具结果"""
+    """格式化工具结果，将 Chroma 占位符还原为空列表"""
+    def _clean_list(val):
+        if isinstance(val, list) and val == ["_none_"]:
+            return []
+        return val if isinstance(val, list) else []
     return {
         "tool_name": doc.metadata.get("tool_name", ""),
-        "required_slots": doc.metadata.get("required_slots", []),
-        "optional_slots": doc.metadata.get("optional_slots", []),
-        "triggers": doc.metadata.get("triggers", []),
+        "required_slots": _clean_list(doc.metadata.get("required_slots", [])),
+        "optional_slots": _clean_list(doc.metadata.get("optional_slots", [])),
+        "triggers": _clean_list(doc.metadata.get("triggers", [])),
         "description": doc.page_content.strip()[:200],
         "score": score,
     }

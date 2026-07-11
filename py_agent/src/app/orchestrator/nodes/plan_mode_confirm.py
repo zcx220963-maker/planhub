@@ -46,11 +46,8 @@ async def plan_mode_confirm_node(state) -> dict:
     
     # 如果之前已经询问过，检查用户的回复
     if has_asked_before and user_input:
-        confirm_keywords = ["是", "确认", "好的", "可以", "开启", "开始", "想", "要"]
-        reject_keywords = ["否", "不", "算了", "取消", "不用", "结束", "不要"]
-        
-        is_confirm = any(keyword in user_input for keyword in confirm_keywords)
-        is_reject = any(keyword in user_input for keyword in reject_keywords)
+        is_confirm = user_input.strip().lower() == "__click_confirm__"
+        is_reject = user_input.strip().lower() == "__click_reject__"
         
         print(f"[DEBUG] plan_mode_confirm: is_confirm={is_confirm}, is_reject={is_reject}")
         
@@ -94,9 +91,9 @@ async def plan_mode_confirm_node(state) -> dict:
         else:
             # 回复不明确，重新询问
             return {
-                "agent_output": f"好的，请问您想制定{plan_type_name}吗？请回复「是」开始制定，或回复「否」继续聊天。",
+                "agent_output": f"好的，请问您想制定{plan_type_name}吗？请点击下方按钮选择。",
                 "waiting_for_plan_mode_confirm": True,
-                "original_user_input": original_user_input,  # 保留原始问题
+                "original_user_input": original_user_input,
                 "execution_trace": [
                     {
                         "node": "plan_mode_confirm",
@@ -105,12 +102,11 @@ async def plan_mode_confirm_node(state) -> dict:
                     }
                 ]
             }
-    
-    # 首次进入此节点，直接询问确认（不检查用户输入）
+
     return {
-        "agent_output": f"好的，请问您想制定{plan_type_name}吗？请回复「是」开始制定，或回复「否」继续聊天。",
+        "agent_output": f"好的，请问您想制定{plan_type_name}吗？请点击下方按钮选择。",
         "waiting_for_plan_mode_confirm": True,
-        "original_user_input": original_user_input,  # 保存原始问题
+        "original_user_input": original_user_input,
         "execution_trace": [
             {
                 "node": "plan_mode_confirm",

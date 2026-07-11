@@ -5,9 +5,11 @@ Plan Generator节点 - 计划信息收集器
 
 import re
 
+from ..stream_writer import emit_token, is_streaming
+
 MAX_COLLECT_ROUNDS = 10
 
-CONFIRM_TRIGGERS = {"确认", "确定", "可以", "好的", "好", "ok", "OK", "嗯", "没问题"}
+CONFIRM_TRIGGERS = {"确认", "确定", "可以", "好的", "好", "ok", "嗯", "没问题", "是", "对", "没错", "行", "要", "开始", "__CLICK_CONFIRM__"}
 
 PLAN_GENERATOR_SYSTEM_PROMPT = """你是一个计划信息收集器，通过自然对话收集用户的想法。
 
@@ -27,9 +29,9 @@ PLAN_GENERATOR_SYSTEM_PROMPT = """你是一个计划信息收集器，通过自�
 
 
 def _is_confirm(user_input: str) -> bool:
-    """精确判断用户是否说了确认（去标点后白名单匹配）"""
-    normalized = re.sub(r'[^\w]', '', user_input.strip().lower())
-    return normalized in CONFIRM_TRIGGERS
+    """判断用户是否确认（仅按钮点击触发，用户输入文字不触发）"""
+    text = user_input.strip().lower()
+    return text == "__click_confirm__"
 
 
 def _build_plan_summary(plan_history: list, last_response: str = "") -> str:
@@ -62,7 +64,7 @@ def _build_plan_summary(plan_history: list, last_response: str = "") -> str:
 
 
 async def plan_generator_node(state) -> dict:
-    """Plan Generator节点：LLM对话收集信息，用户说确认后路由到plan_builder"""
+    """Plan Generator节点：LLM对话收集信息，用户说确认后路由到plan_builder，支持逐 token 流式"""
     try:
         from app.common.llm_factory import get_llm
         from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
@@ -161,14 +163,25 @@ async def plan_generator_node(state) -> dict:
             )))
 
         llm = get_llm(temperature=0.7)
-        result = llm.invoke(messages)
-        response_text = result.content if hasattr(result, 'content') else str(result)
-        llm_raw_response = response_text.strip()
+
+        # 流式调用LLM，逐 token 推送
+        raw_chunks = []
+        streaming = is_streaming()
+        if streaming:
+            async for chunk in llm.astream(messages):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                if content:
+                    raw_chunks.append(content)
+                    emit_token(content)
+            llm_raw_response = "".join(raw_chunks).strip()
+        else:
+            result = await llm.ainvoke(messages)
+            llm_raw_response = result.content if hasattr(result, 'content') else str(result)
+            llm_raw_response = llm_raw_response.strip()
 
         print(f"[DEBUG] plan_generator: raw_response = {llm_raw_response[:200]}")
 
         # 清洗XML标签，只保留用户可读内容
-        # 首轮强制不展示 summary（LLM 小模型不听话，用代码兜底）
         def _clean_llm_response(text: str, is_first: bool) -> str:
             q_match = re.search(r'<question>(.*?)</question>', text, re.DOTALL)
             s_match = re.search(r'<summary>(.*?)</summary>', text, re.DOTALL)
@@ -186,9 +199,9 @@ async def plan_generator_node(state) -> dict:
         # 对未被LLM自带引导句覆盖的轮次追加引导语
         guide_suffix = ""
         if not is_first_entry and plan_history:
-            has_guide = any(kw in llm_raw_response for kw in ["请说确认", "说确认", "没有的话请说确认"])
+            has_guide = any(kw in llm_raw_response for kw in ["请说确认", "说确认", "没有的话请说确认", "点击确认", "下方确认"])
             if not has_guide:
-                guide_suffix = "\n\n如果不想回答或者没有要补充修改的话，请说确认，我将为您生成计划。"
+                guide_suffix = "\n\n如果不想回答或者没有要补充修改的话，请点击下方确认按钮，我将为您生成计划。"
 
         display_response = clean_response + guide_suffix
 

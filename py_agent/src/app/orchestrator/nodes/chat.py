@@ -10,6 +10,7 @@ Chat节点 - 简单对话Agent
 import logging
 from langchain_core.messages import SystemMessage, HumanMessage
 from src.app.common.llm_factory import get_llm
+from ..stream_writer import emit_token, is_streaming
 
 logger = logging.getLogger(__name__)
 
@@ -26,16 +27,12 @@ CHAT_SYSTEM_PROMPT = """你是一个友好的聊天助手，名叫PlanHub助手�
 
 
 async def chat_node(state) -> dict:
-    """Chat节点：简单对话（支持 RAG fallback 和计划模式拒绝 fallback）"""
+    """Chat节点：简单对话，支持逐 token 流式输出"""
     try:
-        # 检查是否是从 RAG fallback 过来的
         rag_fallback = state.get("rag_fallback_to_chat", False)
-        
-        # 检查是否有覆盖输入（如计划模式被拒后用原始问题回答）
         override_input = state.get("chat_override_input")
         actual_input = override_input if override_input else state.get("user_input", "")
-        
-        # 如果是 fallback，检查 fallback 原因
+
         fallback_reason = None
         if rag_fallback:
             execution_trace = state.get("execution_trace", [])
@@ -43,35 +40,46 @@ async def chat_node(state) -> dict:
                 if trace.get("node") == "rag":
                     fallback_reason = trace.get("reason", "知识库未找到相关内容")
                     break
-        
+
         llm = get_llm()
 
-        # 构建消息（根据是否 fallback 调整提示词）
         system_prompt = CHAT_SYSTEM_PROMPT
         if rag_fallback:
             system_prompt += "\n\n重要提示：用户之前尝试查询知识库，但知识库未找到相关内容。你现在需要直接回答用户的问题，并在回答开头简短说明'知识库未找到相关内容，以下是我的思考：'"
         elif override_input:
             system_prompt += "\n\n重要提示：用户之前拒绝了制定计划的提议，现在请直接回答用户的原始问题。开头可以简短说'好的'，然后直接给出答案。"
-        
+
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=actual_input)
         ]
 
-        # 调用LLM
-        response = await llm.ainvoke(messages)
-        result = response.content if hasattr(response, 'content') else str(response)
+        # 流式调用LLM，逐 token 推送
+        chunks = []
+        streaming = is_streaming()
+        if streaming:
+            async for chunk in llm.astream(messages):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                if content:
+                    chunks.append(content)
+                    emit_token(content)
+            result = "".join(chunks)
+        else:
+            response = await llm.ainvoke(messages)
+            result = response.content if hasattr(response, 'content') else str(response)
 
-        # 如果是 RAG fallback，在回答前加上提示（如果 LLM 没有自动加上）
+        # 如果是 RAG fallback，在回答前加上提示
         if rag_fallback and "知识库未找到相关内容" not in result:
-            result = f"知识库未找到相关内容，以下是我的思考：\n\n{result}"
+            prefix = "知识库未找到相关内容，以下是我的思考：\n\n"
+            if streaming:
+                emit_token(prefix)
+            result = prefix + result
 
-        # 更新状态
         return {
-            "intent": "chat",  # 更新意图
+            "intent": "chat",
             "agent_output": result,
-            "rag_fallback_to_chat": False,  # 重置标记
-            "chat_override_input": None,  # 重置标记
+            "rag_fallback_to_chat": False,
+            "chat_override_input": None,
             "execution_trace": [
                 {
                     "node": "chat",
@@ -87,14 +95,13 @@ async def chat_node(state) -> dict:
     except Exception as e:
         error_msg = str(e)
         logger.error(f"chat_node LLM调用异常: {error_msg}")
-        
-        # 如果用户有原始问题，返回错误信息而非通用问候语
+
         original_input = actual_input or state.get("user_input", "")
         if original_input:
             result = f"抱歉，我暂时无法回答您的问题（LLM调用异常: {error_msg}）"
         else:
             result = "你好！我是PlanHub助手，有什么可以帮你的吗？"
-            
+
         return {
             "intent": "chat",
             "agent_output": result,

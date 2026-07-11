@@ -58,7 +58,7 @@ async def doc_retriever_node(state) -> dict:
             }
 
         # 步骤 1: 双路召回（向量 + BM25）
-        from src.app.api.rag_api import hybrid_search, llm_rerank
+        from src.app.api.rag import hybrid_search, llm_rerank
 
         docs, retrieval_info = hybrid_search(
             query=plan_summary,

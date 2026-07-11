@@ -8,6 +8,7 @@ interface Message {
   intent?: string;
   trace?: any[];
   timestamp: Date;
+  isStreaming?: boolean;
 }
 
 const AgentAssistant: React.FC = () => {
@@ -22,11 +23,12 @@ const AgentAssistant: React.FC = () => {
   ]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [sessionId] = useState(() => `session_${Date.now()}`);
+  const [sessionId, setSessionId] = useState(() => `session_${Date.now()}`);
   const [useRag, setUseRag] = useState(false);
   const [usePlanMode, setUsePlanMode] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -50,36 +52,120 @@ const AgentAssistant: React.FC = () => {
     setInputMessage('');
     setIsLoading(true);
 
+    // 先插入一条空的 assistant 消息（流式填充内容用）
+    const aiMsgId = `assistant_${Date.now()}`;
+    setMessages(prev => [
+      ...prev,
+      { id: aiMsgId, role: 'assistant', content: '', isStreaming: true, timestamp: new Date() }
+    ]);
+
+    abortControllerRef.current = new AbortController();
+
     try {
-      const response = await agentApi.chat(
+      const { body } = await agentApi.chatStream(
         inputMessage,
         sessionId,
-        useRag,
-        usePlanMode
+        'anonymous',
+        undefined
       );
 
-      const assistantMessage: Message = {
-        id: `assistant_${Date.now()}`,
-        role: 'assistant',
-        content: response.answer || '抱歉，没有收到有效回复',
-        intent: response.intent,
-        trace: response.trace,
-        timestamp: new Date()
-      };
+      const reader = body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let lastContent = '';
+      let finalSessionId = sessionId;
 
-      setMessages(prev => [...prev, assistantMessage]);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // 按 SSE 事件分割（\n\n）
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() || '';
+
+        for (const part of parts) {
+          if (!part.trim()) continue;
+
+          let eventType = 'message';
+          let dataStr = '';
+          for (const line of part.split('\n')) {
+            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
+          }
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+
+            if (eventType === 'response') {
+              // 节点输出快照 → 实时更新 assistant 消息内容
+              lastContent = data.content || lastContent;
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === aiMsgId
+                    ? { ...m, content: lastContent }
+                    : m
+                )
+              );
+            } else if (eventType === 'done') {
+              // 最终完成 → 用完整响应覆盖，保留原有内容兜底
+              lastContent = data.response || lastContent;
+              finalSessionId = data.session_id || finalSessionId;
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === aiMsgId
+                    ? {
+                        ...m,
+                        content: lastContent,
+                        isStreaming: false,
+                        intent: data.intent,
+                        trace: data.execution_trace,
+                      }
+                    : m
+                )
+              );
+            }
+          } catch {
+            // JSON 解析失败则略过
+          }
+        }
+      }
+
+      // 流结束但没收到 done → 手动收尾
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === aiMsgId && m.isStreaming
+            ? { ...m, isStreaming: false }
+            : m
+        )
+      );
+      setSessionId(finalSessionId);
     } catch (error: any) {
-      console.error('Agent API Error:', error);
-      const errorMessage: Message = {
-        id: `error_${Date.now()}`,
-        role: 'assistant',
-        content: `抱歉，发生了错误：${error.response?.data?.detail || error.message || '未知错误'}`,
-        intent: 'error',
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      console.error('Chat stream error:', error);
+      setMessages(prev =>
+        prev.map(m =>
+          m.id === aiMsgId
+            ? {
+                ...m,
+                content: `抱歉，请求失败：${error.message || '未知错误'}`,
+                isStreaming: false,
+                intent: 'error',
+              }
+            : m
+        )
+      );
     } finally {
       setIsLoading(false);
+      abortControllerRef.current = null;
+    }
+  };
+
+  // 停止生成
+  const handleStopGeneration = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
     }
   };
 
@@ -316,6 +402,17 @@ const AgentAssistant: React.FC = () => {
                 fontSize: '15px'
               }}>
                 {message.content}
+                {message.isStreaming && (
+                  <span style={{
+                    display: 'inline-block',
+                    width: '2px',
+                    height: '16px',
+                    backgroundColor: '#3b82f6',
+                    marginLeft: '2px',
+                    animation: 'blink 1s step-end infinite',
+                    verticalAlign: 'middle'
+                  }} />
+                )}
               </div>
               <span style={{
                 fontSize: '12px',
@@ -427,27 +524,50 @@ const AgentAssistant: React.FC = () => {
             }}
             rows={1}
           />
-          <button
-            onClick={handleSendMessage}
-            disabled={!inputMessage.trim() || isLoading}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: (!inputMessage.trim() || isLoading) ? '#d1d5db' : '#3b82f6',
-              color: 'white',
-              border: 'none',
-              borderRadius: '12px',
-              cursor: (!inputMessage.trim() || isLoading) ? 'not-allowed' : 'pointer',
-              fontSize: '15px',
-              fontWeight: 600,
-              transition: 'all 0.2s',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            <span>发送</span>
-            <span style={{ fontSize: '18px' }}>🚀</span>
-          </button>
+          {isLoading ? (
+            <button
+              onClick={handleStopGeneration}
+              style={{
+                padding: '12px 20px',
+                backgroundColor: '#ef4444',
+                color: 'white',
+                border: 'none',
+                borderRadius: '12px',
+                cursor: 'pointer',
+                fontSize: '15px',
+                fontWeight: 600,
+                transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <span>停止</span>
+              <span style={{ fontSize: '14px' }}>⏹</span>
+            </button>
+          ) : (
+            <button
+              onClick={handleSendMessage}
+              disabled={!inputMessage.trim()}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: !inputMessage.trim() ? '#d1d5db' : '#3b82f6',
+                color: 'white',
+                border: 'none',
+                borderRadius: '12px',
+                cursor: !inputMessage.trim() ? 'not-allowed' : 'pointer',
+                fontSize: '15px',
+                fontWeight: 600,
+                transition: 'all 0.2s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              <span>发送</span>
+              <span style={{ fontSize: '18px' }}>🚀</span>
+            </button>
+          )}
         </div>
         <div style={{
           marginTop: '8px',
@@ -468,6 +588,10 @@ const AgentAssistant: React.FC = () => {
           40% {
             transform: scale(1);
           }
+        }
+        @keyframes blink {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0; }
         }
       `}</style>
     </div>

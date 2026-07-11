@@ -26,6 +26,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         this.jwtUtil = jwtUtil;
     }
 
+    /**
+     * Spring MVC 处理 Flux<byte[]>（SSE 流式响应）时内部会走 startAsync 异步分发，
+     * OncePerRequestFilter 默认 shouldNotFilterAsyncDispatch=true，
+     * 导致异步阶段跳过本过滤器 → SecurityContext 为空 → AuthorizationFilter 返回 403。
+     * 覆盖返回 false，让异步分发也重新走 JWT 校验并写入 SecurityContext。
+     */
+    @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        return false;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                    FilterChain filterChain) throws ServletException, IOException {

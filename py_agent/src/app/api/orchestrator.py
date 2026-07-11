@@ -13,10 +13,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, validator
 from typing import Any, Dict, Optional, Union
 import json
+import asyncio
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from ..orchestrator.graph import create_agent_graph
 from ..orchestrator.schemas import CapabilityFlags
+from ..orchestrator.stream_writer import init_buffer, flush_tokens, clear as clear_token_buffer
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
@@ -440,65 +442,112 @@ async def orchestrate_stream(request: Request, body: OrchestrateRequest):
             accumulated_trace = []
             final_response_text = ""
             seen_response_text = ""
+            init_buffer()
 
-            async for chunk in graph.astream(
-                invoke_input,
-                config={"configurable": {"thread_id": thread_id}},
-                stream_mode=["updates", "values"]
-            ):
-                stream_type, payload = chunk
+            queue: asyncio.Queue = asyncio.Queue()
 
-                if stream_type == "updates":
-                    # 每个节点完成后推送一次 response 事件
-                    # payload 是 {node_name: {agent_output: "...", execution_trace: [...]}} 这样的结构
-                    for node_name, node_output in payload.items():
-                        if not isinstance(node_output, dict):
-                            continue
+            # 生产者1: LangGraph graph.astream 产生 updates/values 事件
+            async def graph_producer():
+                try:
+                    async for chunk in graph.astream(
+                        invoke_input,
+                        config={"configurable": {"thread_id": thread_id}},
+                        stream_mode=["updates", "values"]
+                    ):
+                        await queue.put(("graph", chunk))
+                    await queue.put(("graph_done", None))
+                except Exception as e:
+                    await queue.put(("graph_error", str(e)))
 
-                        # 提取 response 文本
-                        response_text = (
-                            node_output.get("final_response") or
-                            node_output.get("agent_output") or
-                            ""
-                        )
+            # 生产者2: 轮询 token 缓冲，实现逐 token 打字机效果
+            POLL_INTERVAL = 0.03  # 30ms
 
-                        # 只在有新的响应内容时推送
-                        if response_text and response_text != seen_response_text:
-                            seen_response_text = response_text
-                            final_response_text = response_text
-                            yield f"event: response\ndata: {json.dumps({'content': response_text, 'node': node_name}, ensure_ascii=False)}\n\n"
+            async def token_producer():
+                while True:
+                    tokens_text = flush_tokens()
+                    if tokens_text:
+                        await queue.put(("token", tokens_text))
+                    await asyncio.sleep(POLL_INTERVAL)
 
-                        # 提取 execution_trace（如果此节点新增了轨迹）
-                        trace = node_output.get("execution_trace")
-                        if trace:
-                            new_traces = []
-                            for t in trace:
-                                if t not in accumulated_trace:
-                                    accumulated_trace.append(t)
-                                    new_traces.append(t)
-                            if new_traces:
-                                yield f"event: trace\ndata: {json.dumps({'traces': new_traces}, ensure_ascii=False)}\n\n"
+            # 启动两个生产者
+            graph_task = asyncio.create_task(graph_producer())
+            token_task = asyncio.create_task(token_producer())
 
-                            # 第一个节点完成后推送 accumulate 标记，让前端知道流程开始
-                            if log_stream_restore and new_traces:
-                                yield f"event: restore\ndata: {'{}'}\n\n"
+            graph_done = False
+            graph_error = None
 
-                elif stream_type == "values":
-                    # state 快照，可以用于提取更多信息（暂时不用）
-                    pass
+            while True:
+                source, data = await queue.get()
 
-            # 流程结束，推送 done 事件
-            # 确保至少有一条 response
+                if source == "graph_done":
+                    graph_done = True
+                    # 所有节点执行完毕，停止 token 轮询
+                    token_task.cancel()
+                    # 处理积压的 tokens
+                    remaining = flush_tokens()
+                    if remaining:
+                        yield f"event: token\ndata: {json.dumps({'content': remaining}, ensure_ascii=False)}\n\n"
+                    break
+
+                elif source == "graph_error":
+                    graph_error = data
+                    token_task.cancel()
+                    break
+
+                elif source == "token":
+                    yield f"event: token\ndata: {json.dumps({'content': data}, ensure_ascii=False)}\n\n"
+
+                elif source == "graph":
+                    stream_type, payload = data
+
+                    if stream_type == "updates":
+                        for node_name, node_output in payload.items():
+                            if not isinstance(node_output, dict):
+                                continue
+
+                            response_text = (
+                                node_output.get("final_response") or
+                                node_output.get("agent_output") or
+                                ""
+                            )
+
+                            if response_text and response_text != seen_response_text:
+                                seen_response_text = response_text
+                                final_response_text = response_text
+                                yield f"event: response\ndata: {json.dumps({'content': response_text, 'node': node_name}, ensure_ascii=False)}\n\n"
+
+                            trace = node_output.get("execution_trace")
+                            if trace:
+                                new_traces = []
+                                for t in trace:
+                                    if t not in accumulated_trace:
+                                        accumulated_trace.append(t)
+                                        new_traces.append(t)
+                                if new_traces:
+                                    yield f"event: trace\ndata: {json.dumps({'traces': new_traces}, ensure_ascii=False)}\n\n"
+
+                                    if log_stream_restore and new_traces:
+                                        yield f"event: restore\ndata: {'{}'}\n\n"
+
+                    elif stream_type == "values":
+                        pass
+
+            if graph_error:
+                raise Exception(graph_error)
+
             if not final_response_text:
-                # 如果上面没有从 updates 捕获到 response，从 values 的最后 state 里取
                 final_response_text = "处理完成"
 
             yield f"event: done\ndata: {json.dumps({'response': final_response_text, 'session_id': session_id, 'execution_trace': accumulated_trace, 'intent': execution_trace_to_intent(accumulated_trace)}, ensure_ascii=False)}\n\n"
 
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             import traceback
             traceback.print_exc()
             yield f"event: error\ndata: {json.dumps({'detail': str(e)}, ensure_ascii=False)}\n\n"
+        finally:
+            clear_token_buffer()
 
     return StreamingResponse(
         event_generator(),

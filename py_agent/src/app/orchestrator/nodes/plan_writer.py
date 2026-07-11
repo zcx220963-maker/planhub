@@ -16,7 +16,7 @@ prompt 约束：
 
 
 async def plan_writer_node(state) -> dict:
-    """Plan Writer 节点：综合所有数据生成最终计划
+    """Plan Writer 节点：综合所有数据生成最终计划，支持逐 token 流式
     
     记忆注入：
     - 短期记忆：最近 10 轮对话（从 Redis 加载）
@@ -32,7 +32,6 @@ async def plan_writer_node(state) -> dict:
         tool_data_parts = state.get("tool_data_parts", [])
         doc_data_parts = state.get("doc_data_parts", [])
 
-        # 从 State 中获取记忆（由 memory_load_for_writer 预先加载）
         short_term_memory = state.get("short_term_memory", [])
         long_term_memory = state.get("long_term_memory", [])
         print(f"[DEBUG] plan_writer: plan_summary长度={len(plan_summary)}, "
@@ -53,12 +52,10 @@ async def plan_writer_node(state) -> dict:
                 ]
             }
 
-        # 1. 合并所有数据源
         all_data_parts = list(tool_data_parts)
         if doc_data_parts:
             all_data_parts.append("【知识库参考】\n" + "\n\n".join(doc_data_parts))
 
-        # 2. 构建 prompt
         from datetime import datetime
         current_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -71,22 +68,21 @@ async def plan_writer_node(state) -> dict:
 2. 如果 API 数据为空，基于通用知识生成框架性计划
 3. 用 [参考] 标记的信息以建议口吻呈现
 4. 计划要有可执行性，包含具体的步骤和时间安排
-5. 字数控制在 500-2000 字
-6. 用中文输出，格式清晰，使用 markdown 格式
-7. 【用户长期记忆】仅供参考，只有与当前计划直接相关时才使用；如果不相关则完全忽略，不要强行加入计划中"""
+5. 必须完整覆盖计划要求的所有天数/阶段，不能中途截断，确保每天都有详细安排
+6. 用中文输出，格式清晰，使用简单的分段和缩进，不要使用 markdown 格式（如 #、**、* 等符号）
+7. 不要使用任何表情符号或特殊符号（如 🎒、📅、🚄、🌧️、🍜、🏯、🍽️、🚌、☔️、🍵、🏮、🌙、🎭、🌊、🌿、🌸、🌺、🌻、🌹、🍃、🍂、🍁、🌾、🍀、🌵、🌴、🌲、🌳、🌱、🌷、🌼、🌺、🍄、🐾、🦋、🐦、🐬、🐠、🦀、🐙、🦐、🐚、🐳、🐋、🦈、🐟、🐡、🦑、🐙、🦀、🦐、🦞、🦐、🦀、🦐、🦞、🦀、🦐、🦞、🦀、🦐、🦞）
+8. 【用户长期记忆】仅供参考，只有与当前计划直接相关时才使用；如果不相关则完全忽略，不要强行加入计划中
+9. 输出要完整，不要省略任何天数的内容"""
 
-        # 构建用户 prompt（包含记忆）
         user_prompt_parts = [f"【当前日期】{current_date}", f"【计划信息】\n{plan_summary}"]
 
-        # 注入长期记忆（仅作为背景参考，不相关则忽略）
         if long_term_memory:
             lt_text = "\n".join([f"{i+1}. {mem}" for i, mem in enumerate(long_term_memory)])
             user_prompt_parts.append(f"【用户长期记忆 - 偏好与习惯】\n{lt_text}\n（以上仅供参考，仅在与当前计划相关时使用，不相关则忽略）")
 
-        # 注入短期记忆（最近对话背景）
         if short_term_memory:
             st_lines = []
-            for msg in short_term_memory[-8:]:  # 最近8条
+            for msg in short_term_memory[-8:]:
                 role = "用户" if hasattr(msg, 'type') and msg.type == 'human' else "助手"
                 content = msg.content if hasattr(msg, 'content') else str(msg)
                 st_lines.append(f"{role}: {content[:150]}")
@@ -98,21 +94,36 @@ async def plan_writer_node(state) -> dict:
 
         user_prompt = "\n\n".join(user_prompt_parts)
 
-        # 3. LLM 生成
-        llm = get_llm(temperature=0.7)
-        result = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt)
-        ])
-        plan_text = result.content if hasattr(result, "content") else str(result)
-        plan_text = plan_text.strip()
+        from ..stream_writer import emit_token, is_streaming
 
-        # 4. 空输出兜底
+        llm = get_llm(temperature=0.7)
+
+        plan_text = ""
+        streaming = is_streaming()
+        if streaming:
+            async for chunk in llm.astream([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]):
+                content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+                if content:
+                    plan_text += content
+                    emit_token(content)
+            plan_text = plan_text.strip()
+        else:
+            result = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ])
+            plan_text = result.content if hasattr(result, "content") else str(result)
+            plan_text = plan_text.strip()
+
         if not plan_text or len(plan_text) < 50:
             plan_text = _build_fallback_plan(plan_summary)
+            if streaming:
+                emit_token("\n\n" + plan_text)
             print(f"[DEBUG] plan_writer: LLM 输出为空，使用兜底计划")
 
-        # 5. 构建 plan_metadata
         plan_metadata = {
             "generated_at": datetime.now().isoformat(),
             "data_sources": {

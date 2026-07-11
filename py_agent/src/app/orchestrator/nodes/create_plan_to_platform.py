@@ -94,6 +94,14 @@ async def create_plan_to_platform_node(state) -> dict:
     plan_type = state.get("plan_type", "learning")
     plan_info = state.get("plan_info", {}) or {}
 
+    import re
+    if "是否要将此计划创建" in plan_text or "计划已生成" in plan_text or "计划已修改" in plan_text or "__DATA_SOURCES__" in plan_text:
+        plan_text = re.sub(r'^.*?计划已[生成修改]！\s*\n', '', plan_text, flags=re.DOTALL)
+        plan_text = re.sub(r'\n\n__DATA_SOURCES__[\s\S]*?__END_DATA_SOURCES__', '', plan_text)
+        plan_text = re.sub(r'\n\s*---\s*\n\s*是否要将此计划创建到[Pp]lan[Hh]ub平台[\s\S]*$', '', plan_text)
+        plan_text = plan_text.strip()
+        print(f"[DEBUG] create_plan_to_platform: cleaned plan_text, new length={len(plan_text)}")
+
     print(f"[DEBUG] create_plan_to_platform: plan_title={plan_title}, plan_text length={len(plan_text)}, plan_type={plan_type}, plan_info={plan_info}")
 
     # 确保标题和文本存在

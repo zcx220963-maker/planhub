@@ -32,9 +32,12 @@ PLAN_GENERATOR_SYSTEM_PROMPT = """你是一个计划信息收集员，你的工�
 - 直到用户点击确认，才停止收集信息"""
 
 
+CONFIRM_KEYWORDS = {"确认", "确定", "可以", "好的", "好", "ok", "OK", "嗯", "没问题", "是", "对", "没错", "行", "要", "开始", "__CLICK_CONFIRM__"}
+
 def _is_confirm(user_input: str) -> bool:
-    """只有点击超链接发送的 __CLICK_CONFIRM__ 才算确认，普通文字不算"""
-    return user_input.strip() == "__CLICK_CONFIRM__"
+    """判断用户是否确认（仅按钮点击触发，用户输入文字不触发）"""
+    text = user_input.strip().lower()
+    return text == "__click_confirm__"
 
 
 def _build_plan_summary(plan_history: list, last_response: str = "") -> str:

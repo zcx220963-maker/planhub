@@ -513,21 +513,62 @@ async def _call_city_intro(params: dict) -> dict:
     if not city:
         return {"success": False, "error": "缺少城市"}
 
+    headers = {
+        "User-Agent": "PlanHub/1.0 (https://planhub.example.com; planhub@example.com)"
+    }
+
     try:
-        url = f"https://zh.wikipedia.org/api/rest_v1/page/summary/{city}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            extract = data.get("extract", "")
-            if extract:
-                return {"success": True, "data": {"city": city, "introduction": extract[:500]}}
-        url_en = f"https://en.wikipedia.org/api/rest_v1/page/summary/{city}"
-        resp_en = requests.get(url_en, timeout=10)
-        if resp_en.status_code == 200:
-            data = resp_en.json()
-            extract = data.get("extract", "")
-            if extract:
-                return {"success": True, "data": {"city": city, "introduction": extract[:500]}}
+        candidates = [city]
+        if not any(city.endswith(s) for s in ["市", "县", "区", "省", "特别行政区"]):
+            candidates.append(city + "市")
+            candidates.append(city + "县")
+            candidates.append(city + "区")
+
+        for name in candidates:
+            url = f"https://zh.wikipedia.org/api/rest_v1/page/summary/{name}"
+            try:
+                resp = requests.get(url, headers=headers, timeout=8)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    extract = data.get("extract", "")
+                    if extract:
+                        return {"success": True, "data": {"city": city, "introduction": extract[:500]}}
+            except Exception:
+                continue
+
+        try:
+            search_url = f"https://zh.wikipedia.org/w/api.php?action=query&list=search&srsearch={city}&srlimit=5&format=json"
+            resp = requests.get(search_url, headers=headers, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                results = data.get("query", {}).get("search", [])
+                for item in results[:5]:
+                    title = item.get("title", "")
+                    if title:
+                        summary_url = f"https://zh.wikipedia.org/api/rest_v1/page/summary/{title}"
+                        try:
+                            s_resp = requests.get(summary_url, headers=headers, timeout=8)
+                            if s_resp.status_code == 200:
+                                s_data = s_resp.json()
+                                extract = s_data.get("extract", "")
+                                if extract:
+                                    return {"success": True, "data": {"city": city, "introduction": extract[:500]}}
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        try:
+            url_en = f"https://en.wikipedia.org/api/rest_v1/page/summary/{city}"
+            resp_en = requests.get(url_en, headers=headers, timeout=8)
+            if resp_en.status_code == 200:
+                data = resp_en.json()
+                extract = data.get("extract", "")
+                if extract:
+                    return {"success": True, "data": {"city": city, "introduction": extract[:500]}}
+        except Exception:
+            pass
+
         return {"success": False, "error": f"未找到城市介绍: {city}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -540,16 +581,20 @@ async def _call_wikipedia(params: dict) -> dict:
     if not query:
         return {"success": False, "error": "缺少查询词"}
 
+    headers = {
+        "User-Agent": "PlanHub/1.0 (https://planhub.example.com; planhub@example.com)"
+    }
+
     try:
         url = f"https://zh.wikipedia.org/api/rest_v1/page/summary/{query}"
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             extract = data.get("extract", "")
             if extract:
                 return {"success": True, "data": {"title": data.get("title", query), "summary": extract[:500]}}
         url_en = f"https://en.wikipedia.org/api/rest_v1/page/summary/{query}"
-        resp_en = requests.get(url_en, timeout=10)
+        resp_en = requests.get(url_en, headers=headers, timeout=10)
         if resp_en.status_code == 200:
             data = resp_en.json()
             extract = data.get("extract", "")

@@ -4,6 +4,9 @@
 提供对话列表、详情查询、删除等功能。
 """
 
+import logging
+import sys
+
 from fastapi import APIRouter, HTTPException
 from config import settings
 from app.dao.redis_dao import (
@@ -14,6 +17,18 @@ from app.dao.redis_dao import (
 )
 
 router = APIRouter(prefix="/conversations", tags=["对话管理"])
+logger = logging.getLogger(__name__)
+
+
+def _safe_log(msg: str):
+    """安全日志输出，避免 Windows GBK 控制台编码错误（如 emoji 👋🌟）"""
+    try:
+        print(msg)
+    except (UnicodeEncodeError, OSError):
+        try:
+            sys.stderr.write(msg.encode("ascii", errors="replace").decode("ascii") + "\n")
+        except Exception:
+            pass
 
 
 @router.get("")
@@ -37,10 +52,10 @@ async def list_conversations_api(
     - total: 总对话数
     """
     try:
-        print(f"[DEBUG] list_conversations called - user_id: {user_id}, module: {module}, limit: {limit}")
+        logger.debug("list_conversations called - user_id: %s, module: %s, limit: %s", user_id, module, limit)
         conversations = list_conversations(user_id, limit, offset, module)
         total = get_conversation_count(user_id, module)
-        print(f"[DEBUG] Found {len(conversations)} conversations, total: {total}")
+        logger.debug("Found %d conversations, total: %d", len(conversations), total)
 
         return {
             "conversations": conversations,
@@ -50,7 +65,7 @@ async def list_conversations_api(
             "module": module
         }
     except Exception as e:
-        print(f"[ERROR] list_conversations failed: {e}")
+        logger.error("list_conversations failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -66,7 +81,7 @@ async def get_conversation(session_id: str):
     - 完整的对话信息，包含所有历史记录
     """
     try:
-        print(f"[DEBUG] get_conversation called - session_id: {session_id}")
+        logger.debug("get_conversation called - session_id: %s", session_id)
         conversation = get_conversation_detail(session_id)
         if not conversation:
             raise HTTPException(status_code=404, detail="对话不存在")
@@ -75,7 +90,7 @@ async def get_conversation(session_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[ERROR] get_conversation failed: {e}")
+        logger.error("get_conversation failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -91,9 +106,9 @@ async def delete_conversation(session_id: str):
     - 成功/失败信息
     """
     try:
-        print(f"[DEBUG] delete_conversation called - session_id: {session_id}")
+        logger.debug("delete_conversation called - session_id: %s", session_id)
         clear_session(session_id)
         return {"message": "对话已删除", "session_id": session_id}
     except Exception as e:
-        print(f"[ERROR] delete_conversation failed: {e}")
+        logger.error("delete_conversation failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))

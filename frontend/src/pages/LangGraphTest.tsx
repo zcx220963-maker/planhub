@@ -67,8 +67,9 @@ interface DebugInfo {
 const LangGraphTest = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const AI_API_BASE = 'http://localhost:8080/api/ai';
-  const CONVERSATIONS_API = 'http://localhost:8080/api/ai/conversations';
+  // 通过 Vite proxy 转发到 Java 后端（避免 CORS 预检拦截）
+  const AI_API_BASE = '/api/ai';
+  const CONVERSATIONS_API = '/api/ai/conversations';
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // 解析消息内容，将 [text](/path) 和裸 /plan/123 /post/456 转为可点击链接
@@ -127,12 +128,12 @@ const LangGraphTest = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [showDocPanel, setShowDocPanel] = useState(false);
 
-  // 获取用户头像URL
+  // 获取用户头像URL（走 Vite proxy，相对路径）
   const getFullAvatarUrl = (avatarUrl?: string) => {
     if (!avatarUrl) return null;
     if (avatarUrl.startsWith('http')) return avatarUrl;
-    if (avatarUrl.startsWith('/')) return `http://localhost:8080${avatarUrl}`;
-    return `http://localhost:8080/${avatarUrl}`;
+    // /uploads/xxx 由 Java 的 ResourceHandler 直接返回，也需要走 proxy
+    return avatarUrl.startsWith('/') ?avatarUrl : `/${avatarUrl}`;
   };
 
   // 获取带JWT Token的请求Header
@@ -148,6 +149,8 @@ const LangGraphTest = () => {
 
   const [query, setQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [editingPlan, setEditingPlan] = useState(false);
+  const [editedPlanText, setEditedPlanText] = useState('');
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
@@ -403,29 +406,31 @@ const LangGraphTest = () => {
     }
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!query.trim() || isLoading) return;
+  const sendMessage = async (text: string, showUserMsg: boolean = true) => {
+    if (!text.trim() || isLoading) return;
 
-    const userMessage: Message = {
-      role: 'user',
-      content: query,
-      timestamp: new Date().toISOString()
-    };
+    let messagesToAdd: Message[] = [];
+    
+    if (showUserMsg) {
+      const userMessage: Message = {
+        role: 'user',
+        content: text,
+        timestamp: new Date().toISOString()
+      };
+      messagesToAdd.push(userMessage);
+    }
 
-    // 先插入一条空的 assistant 消息，流式过程中实时更新它
     const streamingMsg: Message = {
       role: 'assistant',
       content: '',
       timestamp: new Date().toISOString(),
       isStreaming: true
     };
+    messagesToAdd.push(streamingMsg);
 
-    setMessages(prev => [...prev, userMessage, streamingMsg]);
-    setQuery('');
+    setMessages(prev => [...prev, ...messagesToAdd]);
     setIsLoading(true);
 
-    // 初始化调试面板的流式状态
     setDebugInfo({
       intent: '',
       confidence: 0,
@@ -443,7 +448,7 @@ const LangGraphTest = () => {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify({
-          message: query,
+          message: text,
           session_id: sessionId || undefined,
           user_id: user?.id || 'anonymous',
           doc_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
@@ -454,7 +459,6 @@ const LangGraphTest = () => {
         throw new Error(`请求失败: ${response.status}`);
       }
 
-      // 流式读取 SSE
       const reader = response.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -470,14 +474,12 @@ const LangGraphTest = () => {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // 按 SSE 事件分割（\n\n 为事件分隔符）
         const parts = buffer.split('\n\n');
         buffer = parts.pop() || '';
 
         for (const part of parts) {
           if (!part.trim()) continue;
 
-          // 解析 SSE 格式：event: xxx\ndata: {...}
           let eventType = 'message';
           let dataStr = '';
 
@@ -494,9 +496,8 @@ const LangGraphTest = () => {
           try {
             const data = JSON.parse(dataStr);
 
-            if (eventType === 'response') {
-              // 节点输出快照 → 更新 assistant 消息内容 + 调试面板流式内容
-              lastContent = data.content || lastContent;
+            if (eventType === 'token') {
+              lastContent += data.content || '';
               setMessages(prev => {
                 const newMsgs = [...prev];
                 const lastIdx = newMsgs.length - 1;
@@ -505,17 +506,31 @@ const LangGraphTest = () => {
                 }
                 return newMsgs;
               });
-              // 调试面板同步更新流式响应
               setDebugInfo(prev => ({
                 ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
                 streamResponse: lastContent,
                 isStreaming: true,
               }));
+            } else if (eventType === 'response') {
+              if (!lastContent) {
+                lastContent = data.content || lastContent;
+                setMessages(prev => {
+                  const newMsgs = [...prev];
+                  const lastIdx = newMsgs.length - 1;
+                  if (newMsgs[lastIdx]?.role === 'assistant') {
+                    newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent };
+                  }
+                  return newMsgs;
+                });
+              }
+              setDebugInfo(prev => ({
+                ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
+                streamResponse: lastContent || (data.content || ''),
+                isStreaming: true,
+              }));
             } else if (eventType === 'trace') {
-              // 增量追加 trace → 调试面板实时更新
               const newTraces = data.traces || [];
               lastTrace = [...lastTrace, ...newTraces];
-              // 从 trace 中提取 intent（supervisor 节点）
               for (const t of newTraces) {
                 if (t.node === 'supervisor' && t.intent) finalIntent = t.intent;
               }
@@ -528,7 +543,6 @@ const LangGraphTest = () => {
                 isStreaming: true,
               }));
             } else if (eventType === 'done') {
-              // 最终完成
               lastContent = data.response || lastContent;
               finalSessionId = data.session_id || finalSessionId;
               finalIntent = data.intent || finalIntent;
@@ -582,7 +596,6 @@ const LangGraphTest = () => {
               }));
             }
           } catch {
-            // JSON 解析失败，按纯文本处理
           }
         }
       }
@@ -603,6 +616,99 @@ const LangGraphTest = () => {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!query.trim() || isLoading) return;
+    const msg = query;
+    setQuery('');
+    await sendMessage(msg);
+  };
+
+  const handleConfirmAction = async (answer: string) => {
+    const payload = answer === '是' ? '__click_confirm__' : '__click_reject__';
+    await sendMessage(payload, false);
+  };
+
+  const shouldShowConfirm = (content: string) => {
+    const patterns = [
+      '点击下方按钮选择',
+      '点击下方确认按钮',
+      '请点击确认',
+    ];
+    return patterns.some(p => content.includes(p));
+  };
+
+  const shouldShowModify = (content: string) => {
+    return content.includes('是否要将此计划创建到 PlanHub 平台');
+  };
+
+  const extractPlanText = (content: string): string => {
+    let text = content;
+    const genMatch = text.match(/计划已生成！\s*\n([\s\S]*?)\n\s*---\s*\n\s*是否要将此计划创建/);
+    if (genMatch) {
+      let plan = genMatch[1];
+      plan = plan.replace(/\n\n__DATA_SOURCES__[\s\S]*?__END_DATA_SOURCES__/, '');
+      return plan.trim();
+    }
+    const modMatch = text.match(/计划已修改！\s*\n([\s\S]*?)\n\s*---\s*\n\s*是否要将此计划创建/);
+    if (modMatch) {
+      let plan = modMatch[1];
+      plan = plan.replace(/\n\n__DATA_SOURCES__[\s\S]*?__END_DATA_SOURCES__/, '');
+      return plan.trim();
+    }
+    return text;
+  };
+
+  const parseDataSources = (content: string) => {
+    const match = content.match(/__DATA_SOURCES__\n([\s\S]*?)\n__END_DATA_SOURCES__/);
+    if (!match) return null;
+    const data = match[1];
+    const result: { toolData: string[]; toolFails: string[]; docData: string[] } = {
+      toolData: [],
+      toolFails: [],
+      docData: [],
+    };
+    let currentSection: 'toolData' | 'toolFails' | 'docData' | null = null;
+    for (const line of data.split('\n')) {
+      if (line === '__TOOL_DATA__') {
+        currentSection = 'toolData';
+        continue;
+      }
+      if (line === '__TOOL_FAILS__') {
+        currentSection = 'toolFails';
+        continue;
+      }
+      if (line === '__DOC_DATA__') {
+        currentSection = 'docData';
+        continue;
+      }
+      if (currentSection) {
+        result[currentSection].push(line);
+      }
+    }
+    result.toolData = result.toolData.filter(s => s.trim());
+    result.toolFails = result.toolFails.filter(s => s.trim());
+    result.docData = result.docData.filter(s => s.trim());
+    return result;
+  };
+
+  const handleStartEdit = (content: string) => {
+    setEditedPlanText(extractPlanText(content));
+    setEditingPlan(true);
+  };
+
+  const handleSaveModifiedPlan = async () => {
+    const text = editedPlanText;
+    setEditingPlan(false);
+    setEditedPlanText('');
+    await sendMessage(`__modify_plan__:${text}`, false);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingPlan(false);
+    setEditedPlanText('');
   };
 
   const handleCancelPlan = async () => {
@@ -837,18 +943,6 @@ const LangGraphTest = () => {
           >
             plan助手
           </button>
-          <button
-            style={styles.tabButton}
-            onClick={() => navigate('/chatbot')}
-          >
-            问答助手
-          </button>
-          <button
-            style={styles.tabButton}
-            onClick={() => navigate('/assistant')}
-          >
-            智能助手
-          </button>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: 'auto' }}>
@@ -1037,11 +1131,206 @@ const LangGraphTest = () => {
                     )}
 
                     <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {msg.role === 'assistant' ? parseMessageContent(msg.content) : msg.content}
+                      {msg.role === 'assistant'
+                        ? parseMessageContent(
+                            msg.content
+                              .replace(/\n\n__DATA_SOURCES__[\s\S]*?__END_DATA_SOURCES__/, '')
+                          )
+                        : msg.content}
                       {msg.isStreaming && (
                         <span style={{ display: 'inline-block', marginLeft: 4, animation: 'blink 1s infinite' }}>▊</span>
                       )}
                     </div>
+                    {!isUser && !msg.isStreaming && parseDataSources(msg.content) && (
+                      <div style={{
+                        marginTop: '12px',
+                        padding: '12px',
+                        backgroundColor: '#f9fafb',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                      }}>
+                        {(() => {
+                          const ds = parseDataSources(msg.content)!;
+                          return (
+                            <>
+                              {ds.toolData.length > 0 && (
+                                <div style={{ marginBottom: ds.docData.length > 0 ? '12px' : 0 }}>
+                                  <div style={{ fontWeight: 600, color: '#059669', marginBottom: '6px' }}>
+                                    调用成功的工具（{ds.toolData.length}个）
+                                  </div>
+                                  <div style={{
+                                    color: '#374151',
+                                    whiteSpace: 'pre-wrap',
+                                    maxHeight: '200px',
+                                    overflowY: 'auto',
+                                    backgroundColor: 'white',
+                                    padding: '8px 10px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #e5e7eb',
+                                  }}>
+                                    {ds.toolData.join('\n')}
+                                  </div>
+                                </div>
+                              )}
+                              {ds.toolFails.length > 0 && (
+                                <div style={{ marginBottom: ds.docData.length > 0 ? '12px' : 0 }}>
+                                  <div style={{ fontWeight: 600, color: '#dc2626', marginBottom: '6px' }}>
+                                    调用失败的工具（{ds.toolFails.length}个）
+                                  </div>
+                                  <div style={{
+                                    color: '#374151',
+                                    whiteSpace: 'pre-wrap',
+                                    maxHeight: '120px',
+                                    overflowY: 'auto',
+                                    backgroundColor: 'white',
+                                    padding: '8px 10px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #e5e7eb',
+                                  }}>
+                                    {ds.toolFails.join('\n')}
+                                  </div>
+                                </div>
+                              )}
+                              {ds.docData.length > 0 && (
+                                <div>
+                                  <div style={{ fontWeight: 600, color: '#0891b2', marginBottom: '6px' }}>
+                                    知识库检索到的文档片段（{ds.docData.length}条）
+                                  </div>
+                                  <div style={{
+                                    color: '#374151',
+                                    whiteSpace: 'pre-wrap',
+                                    maxHeight: '300px',
+                                    overflowY: 'auto',
+                                    backgroundColor: 'white',
+                                    padding: '8px 10px',
+                                    borderRadius: '6px',
+                                    border: '1px solid #e5e7eb',
+                                  }}>
+                                    {ds.docData.join('\n\n---\n\n')}
+                                  </div>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    {!isUser && !msg.isStreaming && shouldShowConfirm(msg.content) && msg === messages[messages.length - 1] && !editingPlan && (
+                      <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                        <button
+                          onClick={() => handleConfirmAction('是')}
+                          disabled={isLoading}
+                          style={{
+                            padding: '8px 24px',
+                            backgroundColor: '#3b82f6',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '8px',
+                            cursor: isLoading ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            fontWeight: 600,
+                            opacity: isLoading ? 0.6 : 1,
+                            transition: 'all 0.2s',
+                          }}
+                        >
+                          确认
+                        </button>
+                        {shouldShowModify(msg.content) && (
+                          <button
+                            onClick={() => handleStartEdit(msg.content)}
+                            disabled={isLoading}
+                            style={{
+                              padding: '8px 24px',
+                              backgroundColor: 'transparent',
+                              color: '#3b82f6',
+                              border: '1px solid #3b82f6',
+                              borderRadius: '8px',
+                              cursor: isLoading ? 'not-allowed' : 'pointer',
+                              fontSize: '14px',
+                              fontWeight: 500,
+                              opacity: isLoading ? 0.6 : 1,
+                              transition: 'all 0.2s',
+                            }}
+                          >
+                            修改
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleConfirmAction('否')}
+                          disabled={isLoading}
+                          style={{
+                            padding: '8px 24px',
+                            backgroundColor: '#f3f4f6',
+                            color: '#374151',
+                            border: '1px solid #d1d5db',
+                            borderRadius: '8px',
+                            cursor: isLoading ? 'not-allowed' : 'pointer',
+                            fontSize: '14px',
+                            fontWeight: 500,
+                            opacity: isLoading ? 0.6 : 1,
+                            transition: 'all 0.2s',
+                          }}
+                        >
+                          取消
+                        </button>
+                      </div>
+                    )}
+                    {!isUser && !msg.isStreaming && editingPlan && shouldShowModify(msg.content) && msg === messages[messages.length - 1] && (
+                      <div style={{ marginTop: '12px' }}>
+                        <textarea
+                          value={editedPlanText}
+                          onChange={(e) => setEditedPlanText(e.target.value)}
+                          style={{
+                            width: '100%',
+                            minHeight: '300px',
+                            padding: '12px',
+                            border: '1px solid #d1d5db',
+                            borderRadius: '8px',
+                            fontSize: '14px',
+                            lineHeight: '1.6',
+                            resize: 'vertical',
+                            fontFamily: 'inherit',
+                          }}
+                          placeholder="请在此修改计划内容..."
+                        />
+                        <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
+                          <button
+                            onClick={handleSaveModifiedPlan}
+                            disabled={isLoading || !editedPlanText.trim()}
+                            style={{
+                              padding: '8px 24px',
+                              backgroundColor: '#3b82f6',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '8px',
+                              cursor: isLoading ? 'not-allowed' : 'pointer',
+                              fontSize: '14px',
+                              fontWeight: 600,
+                              opacity: isLoading ? 0.6 : 1,
+                            }}
+                          >
+                            保存修改
+                          </button>
+                          <button
+                            onClick={handleCancelEdit}
+                            disabled={isLoading}
+                            style={{
+                              padding: '8px 24px',
+                              backgroundColor: '#f3f4f6',
+                              color: '#374151',
+                              border: '1px solid #d1d5db',
+                              borderRadius: '8px',
+                              cursor: isLoading ? 'not-allowed' : 'pointer',
+                              fontSize: '14px',
+                              fontWeight: 500,
+                            }}
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     {msg.timestamp && (
                       <span style={styles.messageTime}>{formatTime(msg.timestamp)}</span>
                     )}

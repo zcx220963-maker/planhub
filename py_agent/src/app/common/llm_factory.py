@@ -126,7 +126,7 @@ def get_llm(temperature: float = 0.7, force_ollama: bool = False):
                 api_key=settings.DASHSCOPE_API_KEY,
                 base_url=settings.DASHSCOPE_API_BASE,
                 temperature=temperature,
-                max_tokens=4096,
+                max_tokens=8192,
             )
             print(f"[INFO] 使用阿里云百炼模型: {settings.DASHSCOPE_MODEL}")
             return _wrap_with_token_stats(base_llm, fallback_model=_build_ollama_llm(temperature))

@@ -16,8 +16,6 @@ import ChangePassword from './pages/ChangePassword';
 import Notifications from './pages/Notifications';
 import MyPosts from './pages/MyPosts';
 import Activities from './pages/Activities';
-import ChatBot from './pages/ChatBot';
-import Assistant from './pages/Assistant';
 import SystemConfig from './pages/SystemConfig';
 import LangGraphTest from './pages/LangGraphTest';
 
@@ -139,16 +137,6 @@ const AppContent = () => {
           <Layout>
             <PostDetail />
           </Layout>
-        </ProtectedRoute>
-      } />
-      <Route path="/chatbot" element={
-        <ProtectedRoute>
-          <ChatBot />
-        </ProtectedRoute>
-      } />
-      <Route path="/assistant" element={
-        <ProtectedRoute>
-          <Assistant />
         </ProtectedRoute>
       } />
       <Route path="/langgraph" element={
