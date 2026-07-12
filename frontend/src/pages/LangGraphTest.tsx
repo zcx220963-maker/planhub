@@ -631,17 +631,62 @@ const LangGraphTest = () => {
     await sendMessage(payload, false);
   };
 
-  const shouldShowConfirm = (content: string) => {
+  const getLastNodeTrace = () => {
+    if (!debugInfo?.executionTrace || debugInfo.executionTrace.length === 0) return null;
+    
+    const relevantNodes = ["plan_mode_confirm", "plan_generator", "plan_confirmation"];
+    
+    for (let i = debugInfo.executionTrace.length - 1; i >= 0; i--) {
+      const trace = debugInfo.executionTrace[i];
+      if (relevantNodes.includes(trace.node)) {
+        return trace;
+      }
+    }
+    
+    return debugInfo.executionTrace[debugInfo.executionTrace.length - 1];
+  };
+
+  const shouldShowConfirm = (msg: Message) => {
+    if (msg.isStreaming) return false;
+    if (msg !== messages[messages.length - 1]) return false;
+    
+    const lastTrace = getLastNodeTrace();
+    if (!lastTrace) {
+      const patterns = [
+        '点击下方按钮选择',
+        '点击下方确认按钮',
+        '请点击确认',
+        '点击「确认」',
+        '点击确认按钮',
+      ];
+      return patterns.some(p => msg.content.includes(p));
+    }
+    
+    const node = lastTrace.node;
+    
+    if (node === 'plan_mode_confirm') return true;
+    if (node === 'plan_generator' && (lastTrace.collecting_info || lastTrace.current_status === 'collecting')) {
+      if (lastTrace.is_first_entry) return false;
+      return true;
+    }
+    if (node === 'plan_confirmation' && (lastTrace.waiting_for_confirmation || lastTrace.action === 'asked_user')) return true;
+    
     const patterns = [
       '点击下方按钮选择',
       '点击下方确认按钮',
       '请点击确认',
+      '点击「确认」',
+      '点击确认按钮',
     ];
-    return patterns.some(p => content.includes(p));
+    return patterns.some(p => msg.content.includes(p));
   };
 
-  const shouldShowModify = (content: string) => {
-    return content.includes('是否要将此计划创建到 PlanHub 平台');
+  const shouldShowModify = (msg: Message) => {
+    const lastTrace = getLastNodeTrace();
+    if (lastTrace?.node === 'plan_confirmation' && lastTrace.waiting_for_confirmation) {
+      return true;
+    }
+    return msg.content.includes('是否要将此计划创建到 PlanHub 平台');
   };
 
   const extractPlanText = (content: string): string => {
@@ -1216,7 +1261,7 @@ const LangGraphTest = () => {
                         })()}
                       </div>
                     )}
-                    {!isUser && !msg.isStreaming && shouldShowConfirm(msg.content) && msg === messages[messages.length - 1] && !editingPlan && (
+                    {!isUser && shouldShowConfirm(msg) && !editingPlan && (
                       <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
                         <button
                           onClick={() => handleConfirmAction('是')}
@@ -1236,7 +1281,7 @@ const LangGraphTest = () => {
                         >
                           确认
                         </button>
-                        {shouldShowModify(msg.content) && (
+                        {shouldShowModify(msg) && (
                           <button
                             onClick={() => handleStartEdit(msg.content)}
                             disabled={isLoading}
@@ -1276,7 +1321,7 @@ const LangGraphTest = () => {
                         </button>
                       </div>
                     )}
-                    {!isUser && !msg.isStreaming && editingPlan && shouldShowModify(msg.content) && msg === messages[messages.length - 1] && (
+                    {!isUser && !msg.isStreaming && editingPlan && shouldShowModify(msg) && msg === messages[messages.length - 1] && (
                       <div style={{ marginTop: '12px' }}>
                         <textarea
                           value={editedPlanText}

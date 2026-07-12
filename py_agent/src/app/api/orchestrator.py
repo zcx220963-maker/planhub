@@ -16,9 +16,9 @@ import json
 import asyncio
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from ..orchestrator.graph import create_agent_graph
-from ..orchestrator.schemas import CapabilityFlags
-from ..orchestrator.stream_writer import init_buffer, flush_tokens, clear as clear_token_buffer
+from ..service.graph import create_agent_graph
+from ..service.schemas import CapabilityFlags
+from ..service.stream_writer import init_buffer, flush_tokens, clear as clear_token_buffer
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
@@ -180,7 +180,7 @@ def _restore_state_from_history(session_id: str) -> Optional[Dict[str, Any]]:
     返回需要注入 AgentState 的字段字典，或 None（无法恢复）。
     """
     try:
-        from ..orchestrator.memory_bridge import MemoryBridge
+        from ..service.memory_bridge import MemoryBridge
         bridge = MemoryBridge()
         conv = bridge.get_conversation(session_id)
         if not conv or not conv.get("history"):
@@ -588,7 +588,7 @@ async def cancel_session(body: dict):
     thread_id = get_thread_id(session_id)
 
     # 1. 清除 ConversationState（内存中的任务状态）
-    from ..service.conversation_state import reset_conversation_state
+    from ..service.state import reset_conversation_state
     reset_conversation_state(session_id)
 
     # 2. 清除 LangGraph checkpoint（Redis 中的计划流程状态）

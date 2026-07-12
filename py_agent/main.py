@@ -49,9 +49,9 @@ from src.app.api.rag import router as rag_router
 from src.app.api.conversations import router as conversation_router
 from src.app.api.orchestrator import router as orchestrator_router  # LangGraph 统一入口
 
-# 导入性能监控中间件
-from src.app.middleware.metrics_middleware import MetricsMiddleware
-from src.app.service.metrics_service import MetricsService
+# 性能监控中间件和服务（已删除 middleware/ 和 metrics_service.py，注释掉）
+# from src.app.middleware.metrics_middleware import MetricsMiddleware
+# from src.app.service.metrics_service import MetricsService
 
 # 创建 FastAPI 应用（类似 Spring Boot 的 @SpringBootApplication）
 app = FastAPI(
@@ -69,20 +69,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 初始化性能监控服务
+# 初始化性能监控服务（已删除 metrics_service.py，注释掉）
 metrics_service = None
-if settings.use_redis_bool:
-    try:
-        redis_client = get_redis_client()
-        metrics_service = MetricsService(redis_client)
-        print("[INFO] 性能监控服务初始化完成")
-    except Exception as e:
-        print(f"[WARN] 性能监控服务初始化失败: {e}")
+# if settings.use_redis_bool:
+#     try:
+#         redis_client = get_redis_client()
+#         metrics_service = MetricsService(redis_client)
+#         print("[INFO] 性能监控服务初始化完成")
+#     except Exception as e:
+#         print(f"[WARN] 性能监控服务初始化失败: {e}")
 
-# 添加性能监控中间件
-if metrics_service:
-    app.add_middleware(MetricsMiddleware, metrics_service=metrics_service)
-    print("[INFO] 性能监控中间件已注册")
+# 添加性能监控中间件（已删除 middleware/，注释掉）
+# if metrics_service:
+#     app.add_middleware(MetricsMiddleware, metrics_service=metrics_service)
+#     print("[INFO] 性能监控中间件已注册")
 
 
 # ─── 内部鉴权中间件 ─────────────────────────────────────────────

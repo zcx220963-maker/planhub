@@ -278,8 +278,9 @@ def init_qa_chain():
         store = get_or_create_user_vector_store("default")
         from langchain_core.prompts import ChatPromptTemplate
         from langchain_core.runnables import RunnablePassthrough
+        from prompts.rag import RAG_CHAT_SYSTEM_PROMPT
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是一个知识库助手。请根据以下上下文回答用户的问题。\n\n上下文：\n{context}"),
+            ("system", RAG_CHAT_SYSTEM_PROMPT + "\n\n上下文：\n{context}"),
             ("human", "{question}")
         ])
         def format_docs(docs):
@@ -804,29 +805,17 @@ def llm_rerank(question: str, candidate_docs: List[Document], top_k: int,
         preview = d.page_content[:300].replace("\n", " ")
         preview_list.append({"id": i, "preview": preview})
 
-    prompt = f"""你是一个文档相关性评分员。请根据用户问题，对每个候选文档打 0-10 的相关分：
-- 10 = 完全相关，文档内容直接回答了问题
-- 5-9 = 部分相关，文档提到了一些相关内容但不够直接
-- 1-4 = 弱相关，只提到了主题但没有具体回答
-- 0 = 完全不相关
+    from prompts.rag import LLM_RERANK_SYSTEM_PROMPT, LLM_RERANK_PROMPT_TEMPLATE
 
-用户问题: {question}
-
-候选文档（JSON 数组）：
-{json.dumps(preview_list, ensure_ascii=False, indent=2)}
-
-请严格只输出 JSON，格式：
-{{
-  "scores": [
-    {{"id": 0, "score": 分数}}
-  ]
-}}
-"""
+    prompt = LLM_RERANK_PROMPT_TEMPLATE.format(
+        question=question,
+        preview_list=json.dumps(preview_list, ensure_ascii=False, indent=2),
+    )
     # 调用 LLM（以简单字符串方式调用）
     try:
         from langchain_core.messages import HumanMessage, SystemMessage
         messages = [
-            SystemMessage(content="你是一个文档评分助手，只输出 JSON，不输出其他内容。"),
+            SystemMessage(content=LLM_RERANK_SYSTEM_PROMPT),
             HumanMessage(content=prompt),
         ]
         resp = llm.invoke(messages)
@@ -1078,43 +1067,8 @@ async def query_rag(request: RAGQueryRequest):
             from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
             # 系统提示：结构化 + 思维链引导 + 引用标注 + Few-shot 示例
-            system_prompt = f"""你是 PlanHub 知识库助手，基于下方"文档片段"回答用户问题。
-
-【核心规则 — 严格遵守】
-1. **禁止引入外部知识**：只使用文档片段中的信息回答问题。即使你有相关的先验知识，也只能输出文档中存在的内容。
-2. **以文档为准**：如果文档内容与你的先验知识冲突，**必须以文档为准**，忽略你的先验知识。
-3. **禁止编造信息**：文档中没有提到的信息，绝对不要编造出来。如果文档内容不完整，只回答文档中已有的部分。
-4. **完全无关时**：如果文档片段中完全没有与问题相关的信息，明确回答："在知识库中未找到相关信息"
-5. **必须标注来源**：回答中引用的每一点信息，都要标注来源（格式：[来源: 文档文件名#片段序号]）
-6. **表格内容处理**：如果文档包含表格（如教育作用、教育对象、教学内容等分类），要完整提取每个分类下的内容，不要遗漏任何一行。
-7. **严格逻辑一致性**：回答中的结论必须与文档中的事实一致，不得自相矛盾。特别是涉及数字、限制、条件的问题，要严格按照文档给出的约束推导，不能得出与文档相反的结论。
-8. **数字/限制类问题检查**：如果文档说"X不能超过N"，那么任何大于N的值都是不允许的；如果文档说"X超过N就会失败"，那么比N更大的值也会失败。
-
-【思维链指引 — 回答前按以下步骤在心里完成】
-Step 1: 分析用户想知道什么？核心关键词有哪些？
-Step 2: 在文档片段中逐条搜索与这些关键词相关的内容
-Step 3: 如果文档包含表格或结构化内容，识别所有分类维度（如教育作用、教育对象、教学内容等），确保每个维度都被覆盖
-Step 4: 把找到的信息点整理为要点，每个要点标注来源
-Step 5: 如果没有任何相关信息 → 直接回复"在知识库中未找到相关信息"
-Step 6: 如果有信息 → 用自然语言综合要点，给出最终回答；如果是分析类问题，对提取的信息进行深度分析
-Step 7: **自我检查**：
-   - 回答中的结论是否与文档中的所有事实一致？有没有自相矛盾的地方？
-   - 是否引入了文档中没有的外部知识？
-   - 是否遗漏了文档中的关键信息点？
-
-【Few-shot 示例 — 表格内容处理】
-片段 1 [来源: 教育笔记.pdf#1]: 教育作用：庶、富、教。性相近，习相远。教育对象：有教无类。教学内容：文、行、忠、义。教学原则：因材施教、启发诱导。
-用户: 孔子的教育思想是什么？
-模型: 根据文档内容，孔子的教育思想包括：
-  1. [来源: 教育笔记.pdf#1] 教育作用：庶、富、教；性相近，习相远
-  2. [来源: 教育笔记.pdf#1] 教育对象：有教无类
-  3. [来源: 教育笔记.pdf#1] 教学内容：文、行、忠、义
-  4. [来源: 教育笔记.pdf#1] 教学原则：因材施教、启发诱导
-
-【外部知识冲突反例（不要学）】
-文档只提到孔子的"仁、义、礼"，没有提到"四维"
-错误回答："孔子的思想包括仁、义、礼，以及四维（礼、义、廉、耻）"
-正确回答："[来源: xxx.pdf#1] 孔子的核心思想包括仁、义、礼"
+            from prompts.rag import RAG_CHAT_SYSTEM_PROMPT
+            system_prompt = f"""{RAG_CHAT_SYSTEM_PROMPT}
 
 【文档片段】
 {context}

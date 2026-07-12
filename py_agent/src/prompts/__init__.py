@@ -1,1 +1,38 @@
-# Prompts package
+"""
+Prompts 包 — 统一管理所有节点的 LLM 提示词
+
+每个节点一个文件，通过本 __init__.py 统一导出。
+节点通过 `from prompts.supervisor import INTENT_CLASSIFICATION_PROMPT` 方式引用。
+"""
+
+from .assistant import (
+    ASSISTANT_SYSTEM_PROMPT,
+    CHAT_SYSTEM_PROMPT,
+    RAG_SYSTEM_PROMPT,
+)
+from .supervisor import INTENT_CLASSIFICATION_PROMPT
+from .plan_generator import PLAN_GENERATOR_SYSTEM_PROMPT
+from .plan_writer import PLAN_WRITER_SYSTEM_PROMPT
+from .extract_plan_title import EXTRACT_TITLE_PROMPT, EXTRACT_TITLE_RETRY_PROMPT
+from .parameter_extractor import TOOL_SELECTOR_SYSTEM_PROMPT, TOOL_SELECTOR_PROMPT_TEMPLATE
+from .rag import (
+    RAG_CHAT_SYSTEM_PROMPT,
+    LLM_RERANK_SYSTEM_PROMPT,
+    LLM_RERANK_PROMPT_TEMPLATE,
+)
+
+__all__ = [
+    "ASSISTANT_SYSTEM_PROMPT",
+    "CHAT_SYSTEM_PROMPT",
+    "RAG_SYSTEM_PROMPT",
+    "INTENT_CLASSIFICATION_PROMPT",
+    "PLAN_GENERATOR_SYSTEM_PROMPT",
+    "PLAN_WRITER_SYSTEM_PROMPT",
+    "EXTRACT_TITLE_PROMPT",
+    "EXTRACT_TITLE_RETRY_PROMPT",
+    "TOOL_SELECTOR_SYSTEM_PROMPT",
+    "TOOL_SELECTOR_PROMPT_TEMPLATE",
+    "RAG_CHAT_SYSTEM_PROMPT",
+    "LLM_RERANK_SYSTEM_PROMPT",
+    "LLM_RERANK_PROMPT_TEMPLATE",
+]
