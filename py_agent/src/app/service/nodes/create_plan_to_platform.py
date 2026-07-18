@@ -141,11 +141,14 @@ async def create_plan_to_platform_node(state) -> dict:
 
     print(f"[DEBUG] create_plan_to_platform: date_info = {date_info}")
 
-    # 如果有已有的 plan_id，用 update_plan 补充时间信息（不重复创建）
+    # 如果有已有的 plan_id，用 update_plan 补充标题 + 时间信息（不重复创建）
     if existing_plan_id:
         try:
             from ..plan_store import update_plan
             update_fields = {}
+            # 用 extract_plan_title 生成的标题覆盖 plan_summary 第一行
+            if plan_title and plan_title.strip() and plan_title != "计划":
+                update_fields["title"] = plan_title.strip()[:255]
             if date_info["start_date"]:
                 update_fields["start_date"] = date_info["start_date"]
             if date_info["target_date"]:
@@ -154,7 +157,7 @@ async def create_plan_to_platform_node(state) -> dict:
                 await update_plan(existing_plan_id, **update_fields)
                 print(f"[DEBUG] create_plan_to_platform: 更新已有计划 id={existing_plan_id}, fields={update_fields}")
         except Exception as e:
-            print(f"[WARN] create_plan_to_platform: 更新计划时间信息失败: {e}")
+            print(f"[WARN] create_plan_to_platform: 更新计划信息失败: {e}")
 
     # 推送到飞书/邮箱通知
     notif_title = f"新计划《{plan_title}》已创建"
