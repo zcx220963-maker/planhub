@@ -223,6 +223,12 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
 
   return (
     <div style={inline ? styles.inlineContainer : styles.container}>
+      {/* 彻底移除日历所有元素的 focus outline */}
+      <style>{`
+        .cal-grid-container *:focus { outline: none !important; }
+        .cal-grid-container *:focus-visible { outline: none !important; }
+        .checkin-btn:focus { outline: none; }
+      `}</style>
       {/* 顶部导航 — inline 模式不显示 */}
       {!inline && (
       <header style={styles.header}>
@@ -399,11 +405,11 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
               </div>
 
               {/* 日历 */}
-              <div style={styles.calGrid}>
+              <div style={styles.calGrid} className="cal-grid-container">
                 {weekDays.map(d => <div key={d} style={styles.weekDay}>{d}</div>)}
                 {generateCalendarGrid().map((cell, idx) => (
                   <div
-                    key={idx}
+                    key={`${currentMonth.year}-${currentMonth.month}-${cell.date}-${idx}`}
                     style={{
                       ...styles.calDay,
                       ...(cell.data?.status === 'done' ? styles.calDayDone :
