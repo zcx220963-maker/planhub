@@ -40,9 +40,13 @@ def extract_html_code(raw_content: str) -> Optional[str]:
 
     策略（参考 yu-ai-code-mother 的 HtmlCodeParser）：
     1. 优先匹配 ```html ... ``` 代码块
-    2. 如果没有代码块标记，检查整个内容是否以 <!DOCTYPE 或 <html 开头
-    3. 兜底：将整个内容作为 HTML 返回
+    2. 匹配任意 ``` 代码块（不带 html 标记）
+    3. 去掉 HTML 注释后检测裸 HTML（<!DOCTYPE / <html / <head / <body）
+    4. 兜底：将整个内容作为 HTML 返回
     """
+    if not raw_content or not raw_content.strip():
+        return None
+
     # 策略 1: 提取 ```html 代码块
     pattern = re.compile(r'```html\s*\n([\s\S]*?)```', re.IGNORECASE)
     match = pattern.search(raw_content)
@@ -57,10 +61,19 @@ def extract_html_code(raw_content: str) -> Optional[str]:
         if content.lower().startswith(('<!doctype', '<html', '<head', '<body')):
             return content
 
-    # 策略 3: 整个内容就是 HTML
-    stripped = raw_content.strip()
-    if stripped.lower().startswith(('<!doctype', '<html', '<head', '<body')):
-        return stripped
+    # 策略 3: 去掉 HTML 注释后再检测裸 HTML（thinking 模型可能在 HTML 前输出思考注释）
+    cleaned = re.sub(r'<!--[\s\S]*?-->', '', raw_content).strip()
+    # 也去掉可能的 <think>...</think> 块（thinking 模型的思考过程）
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', cleaned, flags=re.IGNORECASE).strip()
+    if cleaned.lower().startswith(('<!doctype', '<html', '<head', '<body')):
+        return cleaned
+
+    # 策略 4: 从第一个 <!DOCTYPE 或 <html 开始截取到末尾
+    lower = cleaned.lower()
+    for tag in ('<!doctype', '<html', '<head', '<body'):
+        idx = lower.find(tag)
+        if idx != -1:
+            return cleaned[idx:].strip()
 
     return None
 
