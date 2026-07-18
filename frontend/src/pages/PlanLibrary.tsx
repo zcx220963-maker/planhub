@@ -6,7 +6,7 @@
  * - 打卡详情：点击后展开日历 + 今日打卡按钮
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Calendar,
   CheckCircle,
@@ -60,6 +60,9 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
   const [calendar, setCalendar] = useState<CalendarData | null>(null);
   const [currentMonth, setCurrentMonth] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
   const [loading, setLoading] = useState(false);
+  const btnDoneRef = useRef<HTMLButtonElement>(null);
+  const btnSkipRef = useRef<HTMLButtonElement>(null);
+  const btnFailRef = useRef<HTMLButtonElement>(null);
   const [todayStatus, setTodayStatus] = useState<string>('');
   const [todayMap, setTodayMap] = useState<Record<number, string>>({}); // 每个计划的今日打卡状态
 
@@ -351,22 +354,25 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
                 </div>
                 <div style={styles.todayCheckinBtns}>
                   <button
+                    ref={btnDoneRef}
                     style={{ ...styles.todayBtn, ...styles.todayBtnDone, ...(todayStatus === 'done' ? styles.todayBtnActive : {}) }}
-                    onClick={() => handleCheckin(selectedPlan.id, 'done')}
+                    onClick={() => { handleCheckin(selectedPlan.id, 'done'); btnDoneRef.current?.blur(); }}
                     disabled={loading}
                   >
                     <CheckCircle size={14} /> 完成
                   </button>
                   <button
+                    ref={btnSkipRef}
                     style={{ ...styles.todayBtn, ...styles.todayBtnSkip, ...(todayStatus === 'skip' ? styles.todayBtnActive : {}) }}
-                    onClick={() => handleCheckin(selectedPlan.id, 'skip')}
+                    onClick={() => { handleCheckin(selectedPlan.id, 'skip'); btnSkipRef.current?.blur(); }}
                     disabled={loading}
                   >
                     <Circle size={14} /> 跳过
                   </button>
                   <button
+                    ref={btnFailRef}
                     style={{ ...styles.todayBtn, ...styles.todayBtnFail, ...(todayStatus === 'fail' ? styles.todayBtnActive : {}) }}
-                    onClick={() => handleCheckin(selectedPlan.id, 'fail')}
+                    onClick={() => { handleCheckin(selectedPlan.id, 'fail'); btnFailRef.current?.blur(); }}
                     disabled={loading}
                   >
                     <XCircle size={14} /> 未完成
@@ -376,9 +382,9 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
 
               {/* 月份导航 */}
               <div style={styles.monthNav}>
-                <button onClick={() => changeMonth(-1)} style={styles.monthBtn}><ChevronLeft size={16} /></button>
+                <button onClick={() => changeMonth(-1)} style={styles.monthBtn} tabIndex={-1}><ChevronLeft size={16} /></button>
                 <span style={styles.monthLabel}>{currentMonth.year}年 {monthNames[currentMonth.month - 1]}</span>
-                <button onClick={() => changeMonth(1)} style={styles.monthBtn}><ChevronRight size={16} /></button>
+                <button onClick={() => changeMonth(1)} style={styles.monthBtn} tabIndex={-1}><ChevronRight size={16} /></button>
               </div>
 
               {/* 日历 */}
@@ -678,11 +684,20 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 500,
     color: '#64748b',
     transition: 'all 0.15s',
+    outline: 'none',
+  },
+  todayBtnFocusVisible: {
+    boxShadow: '0 0 0 2px rgba(5, 150, 105, 0.3)',
   },
   todayBtnDone: { borderColor: '#a7f3d0', color: '#059669' },
   todayBtnSkip: { borderColor: '#e2e8f0', color: '#64748b' },
   todayBtnFail: { borderColor: '#fecaca', color: '#dc2626' },
-  todayBtnActive: { borderWidth: '2px', fontWeight: 600 },
+  todayBtnActive: {
+    fontWeight: 600,
+    boxShadow: '0 0 0 2px rgba(5, 150, 105, 0.25)',
+    borderColor: '#059669',
+    color: '#059669',
+  },
   // 月份
   monthNav: {
     display: 'flex',
@@ -732,6 +747,7 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '8px',
     minHeight: '38px',
     border: '2px solid transparent',
+    outline: 'none',
   },
   calDayEmpty: { visibility: 'hidden' },
   calDayDone: { background: '#f0fdf4', borderColor: '#a7f3d0' },
