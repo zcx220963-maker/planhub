@@ -191,7 +191,7 @@ tool_executor 调用 get_nutrition("高蛋白低碳水")
 | `plan_confirmation` | 展示文本计划，等待用户确认 |
 | `plan_html_writer` | 将文本计划转为杂志风 HTML 页面 |
 | `extract_plan_title` | LLM 提取计划标题 |
-| `create_plan_to_platform` | 保存计划到 SQLite |
+| `create_plan_to_platform` | 保存计划到 MySQL |
 | `rag` | 文档知识库检索问答 |
 | `chat` | 闲聊/通用问答 |
 | `memory_save` | 保存对话历史 + 提取长期记忆 + 清理 checkpoint |
