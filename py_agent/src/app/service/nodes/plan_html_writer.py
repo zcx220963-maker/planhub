@@ -86,6 +86,8 @@ async def plan_html_writer_node(state) -> dict:
             html_output = extract_text(result.content) if hasattr(result, "content") else str(result)
             html_output = html_output.strip()
 
+        print(f"[DEBUG] plan_html_writer: streaming={streaming}, html_output长度={len(html_output)}, 前100字符={html_output[:100]!r}")
+
         if not html_output or len(html_output) < 100:
             print(f"[WARN] plan_html_writer: HTML 输出为空，跳过")
             return {
