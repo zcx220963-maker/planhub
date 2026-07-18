@@ -180,6 +180,14 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
     }
   };
 
+  // 切换月份时移除按钮焦点，避免 focus 描边残留
+  useEffect(() => {
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && el.classList.contains('checkin-btn')) {
+      el.blur();
+    }
+  }, [currentMonth]);
+
   // 切换月份
   const changeMonth = (delta: number) => {
     if (!expandedPlan) return;
@@ -355,6 +363,7 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
                 <div style={styles.todayCheckinBtns}>
                   <button
                     ref={btnDoneRef}
+                    className="checkin-btn"
                     style={{ ...styles.todayBtn, ...styles.todayBtnDone, ...(todayStatus === 'done' ? styles.todayBtnActive : {}) }}
                     onClick={() => { handleCheckin(selectedPlan.id, 'done'); btnDoneRef.current?.blur(); }}
                     disabled={loading}
@@ -363,6 +372,7 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
                   </button>
                   <button
                     ref={btnSkipRef}
+                    className="checkin-btn"
                     style={{ ...styles.todayBtn, ...styles.todayBtnSkip, ...(todayStatus === 'skip' ? styles.todayBtnActive : {}) }}
                     onClick={() => { handleCheckin(selectedPlan.id, 'skip'); btnSkipRef.current?.blur(); }}
                     disabled={loading}
@@ -371,6 +381,7 @@ const PlanLibrary = ({ inline = false, onClose, onDetailChange }: { inline?: boo
                   </button>
                   <button
                     ref={btnFailRef}
+                    className="checkin-btn"
                     style={{ ...styles.todayBtn, ...styles.todayBtnFail, ...(todayStatus === 'fail' ? styles.todayBtnActive : {}) }}
                     onClick={() => { handleCheckin(selectedPlan.id, 'fail'); btnFailRef.current?.blur(); }}
                     disabled={loading}
