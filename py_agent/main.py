@@ -131,13 +131,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[WARN] 降级服务初始化失败: {e}")
 
-    # 4. 本地 SQLite + 通知系统
+    # 4. MySQL 数据库 + 通知系统
     try:
         from src.app.service.plan_store import init_db
-        init_db()
+        await init_db()
         from src.app.service.notifier import init_notifications
         init_notifications()
-        print("[INFO] 数据库和通知系统初始化完成")
+        print("[INFO] MySQL 数据库和通知系统初始化完成")
     except Exception as e:
         print(f"[WARN] 数据库/通知初始化失败: {e}")
 

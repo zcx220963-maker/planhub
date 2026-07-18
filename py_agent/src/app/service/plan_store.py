@@ -1,5 +1,5 @@
 """
-计划本地存储 —— SQLite 存储计划 + 打卡记录
+计划存储 —— MySQL 存储计划 + 打卡记录
 
 数据模型：
 - plans: 计划基本信息（含 HTML 预览路径）
@@ -7,65 +7,144 @@
 """
 
 import os
-import sqlite3
+import asyncio
 from datetime import datetime, date
 from typing import Optional, Dict, Any, List
 
-_DB_PATH = os.environ.get("PLAN_DB_PATH", "./data/plans.db")
-os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
+import aiomysql
+from config import settings
+
+# ── MySQL 连接配置 ──────────────────────────────────────────
+DB_HOST = settings.DB_HOST
+DB_PORT = settings.DB_PORT
+DB_USER = settings.DB_USER
+DB_PASSWORD = settings.DB_PASSWORD
+DB_NAME = settings.DB_NAME
+
+# 全局连接池
+_pool: aiomysql.Pool = None
 
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(_DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+async def get_pool() -> aiomysql.Pool:
+    """获取（或创建）全局 MySQL 连接池"""
+    global _pool
+    if _pool is None:
+        _pool = await aiomysql.create_pool(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            db=DB_NAME,
+            charset="utf8mb4",
+            autocommit=True,
+            minsize=1,
+            maxsize=10,
+        )
+    return _pool
 
 
-def init_db():
+async def _get_conn():
+    """从连接池获取连接"""
+    pool = await get_pool()
+    return await pool.acquire()
+
+
+def _release_conn(conn):
+    """释放连接回池"""
+    global _pool
+    if _pool:
+        _pool.release(conn)
+
+
+async def init_db():
     """初始化数据库表（不存在时创建）"""
-    conn = _get_conn()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS plans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            description TEXT DEFAULT '',
-            category TEXT DEFAULT 'PERSONAL',
-            priority TEXT DEFAULT 'MEDIUM',
-            visibility TEXT DEFAULT 'PUBLIC',
-            start_date TEXT,
-            target_date TEXT,
-            estimated_duration_hours INTEGER,
-            user_id TEXT,
-            html_path TEXT DEFAULT '',
-            plan_text TEXT DEFAULT '',
-            session_id TEXT DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS plan_checkins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            plan_id INTEGER NOT NULL,
-            checkin_date TEXT NOT NULL,
-            status TEXT DEFAULT 'done',
-            note TEXT DEFAULT '',
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
-            UNIQUE(plan_id, checkin_date)
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_checkins_plan_date
-        ON plan_checkins(plan_id, checkin_date)
-    """)
-    conn.commit()
-    conn.close()
-    print(f"[PlanStore] 数据库初始化完成: {_DB_PATH}")
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS plans (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    category VARCHAR(50) DEFAULT 'PERSONAL',
+                    priority VARCHAR(20) DEFAULT 'MEDIUM',
+                    visibility VARCHAR(20) DEFAULT 'PUBLIC',
+                    start_date VARCHAR(20),
+                    target_date VARCHAR(20),
+                    estimated_duration_hours INT,
+                    user_id VARCHAR(100),
+                    html_path TEXT,
+                    plan_text TEXT,
+                    session_id VARCHAR(100) DEFAULT '',
+                    created_at DATETIME NOT NULL,
+                    updated_at DATETIME NOT NULL,
+                    INDEX idx_user_id (user_id),
+                    INDEX idx_created_at (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+            await cur.execute("""
+                CREATE TABLE IF NOT EXISTS plan_checkins (
+                    id INT PRIMARY KEY AUTO_INCREMENT,
+                    plan_id INT NOT NULL,
+                    checkin_date VARCHAR(20) NOT NULL,
+                    status VARCHAR(20) DEFAULT 'done',
+                    note TEXT,
+                    created_at DATETIME NOT NULL,
+                    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
+                    UNIQUE KEY uk_plan_date (plan_id, checkin_date),
+                    INDEX idx_checkin_date (checkin_date)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """)
+    print(f"[PlanStore] MySQL 数据库初始化完成: {DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 
-def save_plan(
+async def close_pool():
+    """关闭连接池（应用退出时调用）"""
+    global _pool
+    if _pool:
+        _pool.close()
+        await _pool.wait_closed()
+        _pool = None
+
+
+async def _query_one(sql: str, params: tuple = None) -> Optional[Dict]:
+    """执行查询，返回单行 dict"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(sql, params)
+            return await cur.fetchone()
+
+
+async def _query_all(sql: str, params: tuple = None) -> List[Dict]:
+    """执行查询，返回多行 list[dict]"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(sql, params)
+            return await cur.fetchall()
+
+
+async def _execute(sql: str, params: tuple = None) -> int:
+    """执行 INSERT/UPDATE/DELETE，返回 lastrowid"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql, params)
+            return cur.lastrowid
+
+
+async def _execute_rowcount(sql: str, params: tuple = None) -> int:
+    """执行 UPDATE/DELETE，返回 affected rows"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            return await cur.execute(sql, params)
+
+
+# ===== 计划 CRUD =====
+
+async def save_plan(
     title: str,
     description: str = "",
     category: str = "PERSONAL",
@@ -80,26 +159,22 @@ def save_plan(
     session_id: str = "",
 ) -> Dict[str, Any]:
     """
-    保存计划到本地 SQLite，返回创建的计划信息。
+    保存计划到 MySQL，返回创建的计划信息。
 
     Returns:
         {"id": int, "title": str, "description": str, ...}
     """
-    now = datetime.now().isoformat()
-    conn = _get_conn()
-    cursor = conn.execute(
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    plan_id = await _execute(
         """INSERT INTO plans
            (title, description, category, priority, visibility,
             start_date, target_date, estimated_duration_hours,
             user_id, html_path, plan_text, session_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
         (title, description, category, priority, visibility,
          start_date, target_date, estimated_duration_hours,
          user_id, html_path, plan_text, session_id, now, now),
     )
-    conn.commit()
-    plan_id = cursor.lastrowid
-    conn.close()
 
     print(f"[PlanStore] 计划已保存: id={plan_id}, title={title}")
     return {
@@ -120,81 +195,68 @@ def save_plan(
     }
 
 
-def update_plan(plan_id: int, **kwargs) -> Optional[Dict[str, Any]]:
+async def update_plan(plan_id: int, **kwargs) -> Optional[Dict[str, Any]]:
     """更新计划字段"""
     allowed = {"title", "description", "category", "priority", "visibility",
                "start_date", "target_date", "estimated_duration_hours",
                "html_path", "plan_text"}
     fields = {k: v for k, v in kwargs.items() if k in allowed}
     if not fields:
-        return get_plan(plan_id)
+        return await get_plan(plan_id)
 
-    fields["updated_at"] = datetime.now().isoformat()
-    set_clause = ", ".join(f"{k}=?" for k in fields)
+    fields["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    set_clause = ", ".join(f"{k}=%s" for k in fields)
     values = list(fields.values()) + [plan_id]
 
-    conn = _get_conn()
-    conn.execute(f"UPDATE plans SET {set_clause} WHERE id=?", values)
-    conn.commit()
-    conn.close()
-    return get_plan(plan_id)
+    await _execute_rowcount(f"UPDATE plans SET {set_clause} WHERE id=%s", tuple(values))
+    return await get_plan(plan_id)
 
 
-def get_plan(plan_id: int) -> Optional[Dict[str, Any]]:
+async def get_plan(plan_id: int) -> Optional[Dict[str, Any]]:
     """根据 ID 获取计划"""
-    conn = _get_conn()
-    row = conn.execute("SELECT * FROM plans WHERE id=?", (plan_id,)).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    return await _query_one("SELECT * FROM plans WHERE id=%s", (plan_id,))
 
 
-def list_plans(user_id: Optional[str] = None, limit: int = 50) -> list:
+async def list_plans(user_id: Optional[str] = None, limit: int = 50) -> list:
     """列出计划（可选按 user_id 过滤），附带打卡统计"""
-    conn = _get_conn()
     if user_id:
-        rows = conn.execute(
-            "SELECT * FROM plans WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
+        rows = await _query_all(
+            "SELECT * FROM plans WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
             (user_id, limit),
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
-            "SELECT * FROM plans ORDER BY created_at DESC LIMIT ?",
+        rows = await _query_all(
+            "SELECT * FROM plans ORDER BY created_at DESC LIMIT %s",
             (limit,),
-        ).fetchall()
-    conn.close()
+        )
 
     result = []
     for row in rows:
         plan = dict(row)
-        plan["checkin_count"] = _get_checkin_count(plan["id"])
+        plan["checkin_count"] = await _get_checkin_count(plan["id"])
         result.append(plan)
     return result
 
 
-def delete_plan(plan_id: int) -> bool:
+async def delete_plan(plan_id: int) -> bool:
     """删除计划（级联删除打卡记录）"""
-    conn = _get_conn()
-    conn.execute("DELETE FROM plan_checkins WHERE plan_id=?", (plan_id,))
-    conn.execute("DELETE FROM plans WHERE id=?", (plan_id,))
-    conn.commit()
-    conn.close()
+    await _execute_rowcount("DELETE FROM plan_checkins WHERE plan_id=%s", (plan_id,))
+    await _execute_rowcount("DELETE FROM plans WHERE id=%s", (plan_id,))
     return True
 
 
-def _get_checkin_count(plan_id: int) -> int:
+async def _get_checkin_count(plan_id: int) -> int:
     """获取计划的总打卡天数"""
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT COUNT(*) as cnt FROM plan_checkins WHERE plan_id=? AND status='done'",
+    row = await _query_one(
+        "SELECT COUNT(*) as cnt FROM plan_checkins WHERE plan_id=%s AND status='done'",
         (plan_id,)
-    ).fetchone()
-    conn.close()
+    )
     return row["cnt"] if row else 0
 
 
 # ===== 打卡相关 =====
 
-def add_checkin(plan_id: int, checkin_date: str = None, status: str = "done", note: str = "") -> Dict[str, Any]:
+async def add_checkin(plan_id: int, checkin_date: str = None, status: str = "done", note: str = "") -> Dict[str, Any]:
     """添加或更新打卡记录
 
     Args:
@@ -208,18 +270,15 @@ def add_checkin(plan_id: int, checkin_date: str = None, status: str = "done", no
     """
     if not checkin_date:
         checkin_date = date.today().isoformat()
-    now = datetime.now().isoformat()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    conn = _get_conn()
-    # UPSERT: 存在则更新，不存在则插入
-    conn.execute("""
-        INSERT INTO plan_checkins (plan_id, checkin_date, status, note, created_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(plan_id, checkin_date)
-        DO UPDATE SET status=excluded.status, note=excluded.note
-    """, (plan_id, checkin_date, status, note, now))
-    conn.commit()
-    conn.close()
+    # MySQL UPSERT: ON DUPLICATE KEY UPDATE
+    await _execute(
+        """INSERT INTO plan_checkins (plan_id, checkin_date, status, note, created_at)
+           VALUES (%s, %s, %s, %s, %s)
+           ON DUPLICATE KEY UPDATE status=VALUES(status), note=VALUES(note)""",
+        (plan_id, checkin_date, status, note, now),
+    )
 
     print(f"[PlanStore] 打卡: plan_id={plan_id}, date={checkin_date}, status={status}")
     return {
@@ -230,21 +289,18 @@ def add_checkin(plan_id: int, checkin_date: str = None, status: str = "done", no
     }
 
 
-def remove_checkin(plan_id: int, checkin_date: str = None) -> bool:
+async def remove_checkin(plan_id: int, checkin_date: str = None) -> bool:
     """删除打卡记录"""
     if not checkin_date:
         checkin_date = date.today().isoformat()
-    conn = _get_conn()
-    conn.execute(
-        "DELETE FROM plan_checkins WHERE plan_id=? AND checkin_date=?",
-        (plan_id, checkin_date)
+    await _execute_rowcount(
+        "DELETE FROM plan_checkins WHERE plan_id=%s AND checkin_date=%s",
+        (plan_id, checkin_date),
     )
-    conn.commit()
-    conn.close()
     return True
 
 
-def get_checkins(plan_id: int, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
+async def get_checkins(plan_id: int, start_date: str = None, end_date: str = None) -> List[Dict[str, Any]]:
     """获取打卡记录
 
     Args:
@@ -255,24 +311,22 @@ def get_checkins(plan_id: int, start_date: str = None, end_date: str = None) -> 
     Returns:
         打卡记录列表
     """
-    conn = _get_conn()
     if start_date and end_date:
-        rows = conn.execute(
+        rows = await _query_all(
             """SELECT * FROM plan_checkins
-               WHERE plan_id=? AND checkin_date BETWEEN ? AND ?
+               WHERE plan_id=%s AND checkin_date BETWEEN %s AND %s
                ORDER BY checkin_date ASC""",
-            (plan_id, start_date, end_date)
-        ).fetchall()
+            (plan_id, start_date, end_date),
+        )
     else:
-        rows = conn.execute(
-            "SELECT * FROM plan_checkins WHERE plan_id=? ORDER BY checkin_date ASC",
-            (plan_id,)
-        ).fetchall()
-    conn.close()
+        rows = await _query_all(
+            "SELECT * FROM plan_checkins WHERE plan_id=%s ORDER BY checkin_date ASC",
+            (plan_id,),
+        )
     return [dict(r) for r in rows]
 
 
-def get_checkin_calendar(plan_id: int, year: int = None, month: int = None) -> Dict[str, Any]:
+async def get_checkin_calendar(plan_id: int, year: int = None, month: int = None) -> Dict[str, Any]:
     """获取日历格式的打卡数据
 
     Returns:
@@ -300,7 +354,7 @@ def get_checkin_calendar(plan_id: int, year: int = None, month: int = None) -> D
     start = f"{year}-{month:02d}-01"
     end = f"{year}-{month:02d}-{total_days:02d}"
 
-    checkins = get_checkins(plan_id, start, end)
+    checkins = await get_checkins(plan_id, start, end)
     days = {}
     for c in checkins:
         days[c["checkin_date"]] = {
@@ -318,7 +372,6 @@ def get_checkin_calendar(plan_id: int, year: int = None, month: int = None) -> D
             streak += 1
             check_date = date.fromordinal(check_date.toordinal() - 1)
         elif date_str in days and days[date_str]["status"] in ("skip", "fail"):
-            # skip/fail 不算 streak 但也不中断（可选：中断）
             check_date = date.fromordinal(check_date.toordinal() - 1)
         else:
             break
@@ -335,13 +388,10 @@ def get_checkin_calendar(plan_id: int, year: int = None, month: int = None) -> D
     }
 
 
-def get_today_checkin(plan_id: int) -> Optional[Dict[str, Any]]:
+async def get_today_checkin(plan_id: int) -> Optional[Dict[str, Any]]:
     """获取今天的打卡状态"""
     today = date.today().isoformat()
-    conn = _get_conn()
-    row = conn.execute(
-        "SELECT * FROM plan_checkins WHERE plan_id=? AND checkin_date=?",
-        (plan_id, today)
-    ).fetchone()
-    conn.close()
-    return dict(row) if row else None
+    return await _query_one(
+        "SELECT * FROM plan_checkins WHERE plan_id=%s AND checkin_date=%s",
+        (plan_id, today),
+    )

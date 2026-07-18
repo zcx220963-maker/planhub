@@ -114,7 +114,7 @@ async def plan_html_writer_node(state) -> dict:
             _title = plan_summary.strip().split('\n')[0][:60] if plan_summary else "AI 生成计划"
             if len(_title) > 60:
                 _title = _title[:57] + "..."
-            _saved = save_plan(
+            _saved = await save_plan(
                 title=_title,
                 description=plan_summary[:500] if plan_summary else "",
                 category="PERSONAL",
@@ -134,7 +134,7 @@ async def plan_html_writer_node(state) -> dict:
 
             # 更新计划的 html_path
             if plan_id and filepath:
-                update_plan(plan_id, html_path=filepath)
+                await update_plan(plan_id, html_path=filepath)
                 print(f"[DEBUG] plan_html_writer: 计划已持久化到计划库, plan_id={plan_id}")
 
             # 通知前端打开预览面板（不经过聊天窗口）

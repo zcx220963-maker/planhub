@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
     USE_REDIS: str = os.getenv("USE_REDIS", "true")
 
+    # ── MySQL 数据库配置 ────────────────────────────────────
+    DB_HOST: str = os.getenv("DB_HOST", "127.0.0.1")
+    DB_PORT: int = int(os.getenv("DB_PORT", "3306"))
+    DB_USER: str = os.getenv("DB_USER", "root")
+    DB_PASSWORD: str = os.getenv("DB_PASSWORD", "1234")
+    DB_NAME: str = os.getenv("DB_NAME", "planhub")
+
     # ── 高德天气 API ─────────────────────────────────────────
     AMAP_API_KEY: str = os.getenv("AMAP_API_KEY", "")
 

@@ -18,7 +18,7 @@
 ```
 前端 (React + Vite)  ──HTTP/WebSocket──▶  Python AI 服务 (FastAPI + LangGraph)
                                         │
-                                        ├── SQLite    (计划/打卡数据)
+                                        ├── MySQL     (计划/打卡数据)
                                         ├── Chroma    (向量库：RAG + 长期记忆)
                                         └── Redis     (对话历史 / LangGraph Checkpoint)
 ```
@@ -32,7 +32,7 @@
 | 前端 | React 19 + TypeScript 6 + Vite 8 + Ant Design 6 |
 | 后端 | Python FastAPI + LangGraph 多 Agent 编排 |
 | AI 模型 | LongCat-2.0（默认）/ Ollama 本地模型 / 阿里云百炼 |
-| 存储 | SQLite（计划数据）+ Chroma（向量库）+ Redis（可选，会话状态） |
+| 存储 | MySQL（计划数据）+ Chroma（向量库）+ Redis（可选，会话状态） |
 
 ### 3. 目录结构
 
@@ -200,35 +200,44 @@ tool_executor 调用 get_nutrition("高蛋白低碳水")
 
 ## 三、数据存储
 
-### 1. SQLite — 计划与打卡
+### 1. MySQL — 计划与打卡
 
-数据库文件：`py_agent/data/plans.db`
+数据库：`planhub`（默认 `127.0.0.1:3306`）
 
 ```sql
 -- 计划表
 plans (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL,
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    title VARCHAR(255) NOT NULL,
     description TEXT,
-    category TEXT DEFAULT 'PERSONAL',
-    priority TEXT DEFAULT 'MEDIUM',
-    visibility TEXT DEFAULT 'PUBLIC',
-    start_date TEXT,
-    target_date TEXT,
-    estimated_duration_hours INTEGER,
-    user_id TEXT,
-    html_path TEXT          -- 杂志风 HTML 预览文件路径
+    category VARCHAR(50) DEFAULT 'PERSONAL',
+    priority VARCHAR(20) DEFAULT 'MEDIUM',
+    visibility VARCHAR(20) DEFAULT 'PUBLIC',
+    start_date VARCHAR(20),
+    target_date VARCHAR(20),
+    estimated_duration_hours INT,
+    user_id VARCHAR(100),
+    html_path TEXT,          -- 杂志风 HTML 预览文件路径
+    plan_text TEXT,
+    session_id VARCHAR(100),
+    created_at DATETIME,
+    updated_at DATETIME
 )
 
 -- 打卡表
 plan_checkins (
-    id INTEGER PRIMARY KEY,
-    plan_id INTEGER,
-    checkin_date TEXT,
-    status TEXT,            -- done / skipped / partial
-    note TEXT
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    plan_id INT NOT NULL,
+    checkin_date VARCHAR(20) NOT NULL,
+    status VARCHAR(20) DEFAULT 'done',
+    note TEXT,
+    created_at DATETIME,
+    FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_plan_date (plan_id, checkin_date)
 )
 ```
+
+连接配置通过环境变量设置：`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_NAME`。
 
 ### 2. Chroma 向量库 — RAG + 长期记忆
 
@@ -293,6 +302,7 @@ DASHSCOPE_MODEL=qwen-max
 
 - Node.js 18+
 - Python 3.12+
+- MySQL 8.0+
 - Redis（可选）
 
 ### 1. 启动 Python AI 服务
@@ -371,6 +381,11 @@ npm run dev
 | `OLLAMA_API_URL` | `http://localhost:11434` | Ollama 地址 |
 | `USE_REDIS` | `true` | 是否启用 Redis |
 | `CHROMA_DB_PATH` | `./chroma_db` | 向量库路径 |
+| `DB_HOST` | `127.0.0.1` | MySQL 地址 |
+| `DB_PORT` | `3306` | MySQL 端口 |
+| `DB_USER` | `root` | MySQL 用户名 |
+| `DB_PASSWORD` | `1234` | MySQL 密码 |
+| `DB_NAME` | `planhub` | MySQL 数据库名 |
 
 ---
 

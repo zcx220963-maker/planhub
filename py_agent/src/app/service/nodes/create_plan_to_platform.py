@@ -151,7 +151,7 @@ async def create_plan_to_platform_node(state) -> dict:
             if date_info["target_date"]:
                 update_fields["target_date"] = date_info["target_date"]
             if update_fields:
-                update_plan(existing_plan_id, **update_fields)
+                await update_plan(existing_plan_id, **update_fields)
                 print(f"[DEBUG] create_plan_to_platform: 更新已有计划 id={existing_plan_id}, fields={update_fields}")
         except Exception as e:
             print(f"[WARN] create_plan_to_platform: 更新计划时间信息失败: {e}")

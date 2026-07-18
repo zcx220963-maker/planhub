@@ -53,21 +53,21 @@ class CheckinRequest(BaseModel):
 @router.post("")
 async def create_plan(body: CreatePlanRequest):
     """创建计划"""
-    result = plan_store.save_plan(**body.dict())
+    result = await plan_store.save_plan(**body.dict())
     return {"success": True, "plan": result}
 
 
 @router.get("")
 async def list_plans(user_id: Optional[str] = None, limit: int = 50):
     """列出所有计划"""
-    plans = plan_store.list_plans(user_id=user_id, limit=limit)
+    plans = await plan_store.list_plans(user_id=user_id, limit=limit)
     return {"plans": plans, "total": len(plans)}
 
 
 @router.get("/{plan_id}")
 async def get_plan(plan_id: int):
     """获取计划详情"""
-    plan = plan_store.get_plan(plan_id)
+    plan = await plan_store.get_plan(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="计划不存在")
     return {"plan": plan}
@@ -76,7 +76,7 @@ async def get_plan(plan_id: int):
 @router.put("/{plan_id}")
 async def update_plan(plan_id: int, body: UpdatePlanRequest):
     """更新计划"""
-    plan = plan_store.update_plan(plan_id, **{k: v for k, v in body.dict().items() if v is not None})
+    plan = await plan_store.update_plan(plan_id, **{k: v for k, v in body.dict().items() if v is not None})
     if not plan:
         raise HTTPException(status_code=404, detail="计划不存在")
     return {"success": True, "plan": plan}
@@ -85,7 +85,7 @@ async def update_plan(plan_id: int, body: UpdatePlanRequest):
 @router.delete("/{plan_id}")
 async def delete_plan(plan_id: int):
     """删除计划"""
-    plan_store.delete_plan(plan_id)
+    await plan_store.delete_plan(plan_id)
     return {"success": True, "message": "计划已删除"}
 
 
@@ -94,7 +94,7 @@ async def delete_plan(plan_id: int):
 @router.get("/{plan_id}/preview")
 async def get_plan_preview(plan_id: int):
     """获取计划的 HTML 预览文件"""
-    plan = plan_store.get_plan(plan_id)
+    plan = await plan_store.get_plan(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="计划不存在")
     html_path = plan.get("html_path", "")
@@ -108,7 +108,7 @@ async def get_plan_preview(plan_id: int):
 @router.post("/checkin")
 async def add_checkin(body: CheckinRequest):
     """添加打卡记录"""
-    result = plan_store.add_checkin(
+    result = await plan_store.add_checkin(
         plan_id=body.plan_id,
         checkin_date=body.checkin_date,
         status=body.status,
@@ -120,7 +120,7 @@ async def add_checkin(body: CheckinRequest):
 @router.delete("/{plan_id}/checkin/{checkin_date}")
 async def remove_checkin(plan_id: int, checkin_date: str):
     """删除打卡记录"""
-    plan_store.remove_checkin(plan_id, checkin_date)
+    await plan_store.remove_checkin(plan_id, checkin_date)
     return {"success": True, "message": "打卡记录已删除"}
 
 
@@ -131,7 +131,7 @@ async def get_checkins(
     end_date: Optional[str] = None,
 ):
     """获取打卡记录"""
-    checkins = plan_store.get_checkins(plan_id, start_date, end_date)
+    checkins = await plan_store.get_checkins(plan_id, start_date, end_date)
     return {"checkins": checkins}
 
 
@@ -141,12 +141,12 @@ async def get_calendar(plan_id: int, year: Optional[int] = None, month: Optional
 
     用法: GET /plans/1/calendar?year=2026&month=7
     """
-    calendar = plan_store.get_checkin_calendar(plan_id, year, month)
+    calendar = await plan_store.get_checkin_calendar(plan_id, year, month)
     return calendar
 
 
 @router.get("/{plan_id}/today")
 async def get_today_checkin(plan_id: int):
     """获取今天的打卡状态"""
-    checkin = plan_store.get_today_checkin(plan_id)
+    checkin = await plan_store.get_today_checkin(plan_id)
     return {"checkin": checkin, "has_checkin": checkin is not None}
