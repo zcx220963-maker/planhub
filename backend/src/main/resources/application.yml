@@ -29,11 +29,31 @@ spring:
         format_sql: true
         dialect: org.hibernate.dialect.MySQLDialect
 
+  # 邮箱发送配置（QQ 邮箱示例；163 用 smtp.163.com:465；Outlook 用 smtp.office365.com:587 + starttls）
+  mail:
+    host: ${MAIL_HOST:smtp.qq.com}
+    port: ${MAIL_PORT:465}
+    protocol: smtps
+    username: ${MAIL_USERNAME:}                 # 发件人邮箱（如 xxx@qq.com）
+    password: ${MAIL_PASSWORD:}                 # SMTP 授权码（不是邮箱登录密码！）
+    default-encoding: UTF-8
+    properties:
+      "mail.smtp.auth": true
+      "mail.smtp.ssl.enable": true
+
 jwt:
   secret: ${JWT_SECRET:planhub-default-dev-secret-change-in-production-please-32-byte-min}
   access-token-expiration: ${JWT_ACCESS_TOKEN_EXPIRATION:3600000}
   refresh-token-expiration: ${JWT_REFRESH_TOKEN_EXPIRATION:86400000}
 
+# 通知系统配置
+notification:
+  feishu:
+    webhook: ${FEISHU_WEBHOOK:}      # 飞书 Webhook 地址，留空则禁用飞书通知
+  email:
+    to: ${NOTIFY_EMAIL_TO:}          # 通知接收邮箱地址，留空则禁用邮件通知
+
+# 邮箱发送配置（QQ 邮箱示例，163/Outlook 同理改 host/port）
 ai:
   service:
     url: ${AI_SERVICE_URL:http://127.0.0.1:8000}

@@ -21,6 +21,7 @@
     "axios": "^1.16.1",
     "class-variance-authority": "^0.7.1",
     "lucide-react": "^1.16.0",
+    "mermaid": "^10.9.6",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-resizable-panels": "^4.11.2",

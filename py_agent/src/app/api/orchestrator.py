@@ -6,19 +6,24 @@ LangGraph多Agent编排API
 - 使用 LangGraph checkpointer 持久化对话状态
 - 支持多轮对话中的状态延续
 - 从 Redis 加载之前的 execution_trace
+- WebSocket 实时流式输出（无轮询、无缓冲、无延迟）
 """
 
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, validator
 from typing import Any, Dict, Optional, Union
 import json
 import asyncio
+import os
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from ..service.graph import create_agent_graph
 from ..service.schemas import CapabilityFlags
-from ..service.stream_writer import init_buffer, flush_tokens, clear as clear_token_buffer
+from ..service.stream_writer import (
+    set_websocket, clear_websocket, is_streaming,
+    is_streaming_complete, reset_streaming_complete, send_ws_message
+)
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
@@ -27,15 +32,14 @@ class OrchestrateRequest(BaseModel):
     """编排请求"""
     message: str
     session_id: Optional[str] = None
-    user_id: Optional[Union[str, int]] = None  # 接受字符串或整数
+    user_id: Optional[Union[str, int]] = None
     model: str = "deepseek-r1:7b"
     temperature: float = 0.7
     capabilities: CapabilityFlags = CapabilityFlags()
-    doc_ids: Optional[list] = None  # 用户选中的文档ID列表（兼容前端传递方式）
+    doc_ids: Optional[list] = None
 
     @validator('user_id', pre=True)
     def convert_user_id_to_str(cls, v):
-        """将user_id转换为字符串"""
         if v is not None:
             return str(v)
         return v
@@ -50,7 +54,7 @@ class OrchestrateResponse(BaseModel):
     handoff_reason: Optional[str] = None
     execution_trace: list = []
     session_id: Optional[str] = None
-    plan_metadata: Optional[dict] = None  # 计划数据元信息，供前端展示数据来源
+    plan_metadata: Optional[dict] = None
 
 
 # 全局图实例和checkpointer
@@ -59,10 +63,7 @@ _checkpointer = None
 
 
 class _RedisCheckpointer(BaseCheckpointSaver):
-    """轻量 Redis checkpointer，支持 TTL 自动过期
-
-    仅存储最新 checkpoint，不维护版本历史。
-    """
+    """轻量 Redis checkpointer，支持 TTL 自动过期"""
     def __init__(self, redis_url, ttl_minutes=1440):
         super().__init__()
         import redis.asyncio as aioredis
@@ -71,7 +72,6 @@ class _RedisCheckpointer(BaseCheckpointSaver):
         self._data = {}
 
     async def aget_tuple(self, config):
-        """获取上一个 checkpoint"""
         from langgraph.checkpoint.base import CheckpointTuple
         from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
         thread_id = config.get("configurable", {}).get("thread_id")
@@ -93,7 +93,6 @@ class _RedisCheckpointer(BaseCheckpointSaver):
         return None
 
     async def aput(self, config, checkpoint, metadata, new_versions):
-        """存储当前 checkpoint"""
         from langgraph.checkpoint.base import CheckpointTuple
         from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
         thread_id = config.get("configurable", {}).get("thread_id")
@@ -120,7 +119,6 @@ class _RedisCheckpointer(BaseCheckpointSaver):
         return t.checkpoint if t else {}
 
     def get_next_version(self, current, channel):
-        """生成下一个 channel 版本号（兼容新版 LangGraph）"""
         import random
         if current is None:
             current_v = 0
@@ -154,16 +152,16 @@ def _get_checkpointer():
 def get_graph():
     """获取或创建图实例（带checkpointer）"""
     global _graph_instance, _checkpointer
-    
+
     if _graph_instance is None:
         _checkpointer = _get_checkpointer()
-        
+
         if _checkpointer is None:
             from langgraph.checkpoint.memory import MemorySaver
             _checkpointer = MemorySaver()
-        
+
         _graph_instance = create_agent_graph().compile(checkpointer=_checkpointer)
-    
+
     return _graph_instance
 
 
@@ -176,8 +174,6 @@ def generate_session_id() -> str:
 def _restore_state_from_history(session_id: str) -> Optional[Dict[str, Any]]:
     """
     当 LangGraph checkpoint 过期时，从 Redis 会话历史重建计划流程状态。
-
-    返回需要注入 AgentState 的字段字典，或 None（无法恢复）。
     """
     try:
         from ..service.memory_bridge import MemoryBridge
@@ -187,10 +183,8 @@ def _restore_state_from_history(session_id: str) -> Optional[Dict[str, Any]]:
             return None
 
         history = conv["history"]
-        # 只取最近 20 轮对话用于判断
         recent = history[-40:]
 
-        # 从对话历史中提取计划流程相关字段
         plan_conversation_history = []
         plan_summary = ""
         plan_text_cache = ""
@@ -203,11 +197,9 @@ def _restore_state_from_history(session_id: str) -> Optional[Dict[str, Any]]:
             if role in ("user", "assistant"):
                 plan_conversation_history.append({"role": role, "content": content})
 
-        # 判断是否在计划流程中：看 assistant 消息里是否有计划相关的引导语
         plan_signals = [
             "制定计划", "计划信息收集", "还有需要补充", "请说确认",
             "正在为你生成计划", "计划已生成", "是否创建到平台",
-            "从合肥到杭州", "三日游",  # 示例：具体计划内容
         ]
         for msg in recent:
             if msg.get("role") == "assistant":
@@ -219,27 +211,22 @@ def _restore_state_from_history(session_id: str) -> Optional[Dict[str, Any]]:
         if not is_plan_flow:
             return None
 
-        # 尝试从对话历史中提取 plan_summary（assistant 消息中的 summary 标签内容）
         import re
         for msg in reversed(recent):
             if msg.get("role") == "assistant":
                 content = msg.get("content", "")
-                # 匹配 <summary>...</summary>
                 match = re.search(r'<summary>(.*?)</summary>', content, re.DOTALL)
                 if match:
                     plan_summary = match.group(1).strip()[:500]
                     break
 
-        # 尝试提取已生成的计划文本（plan_writer 输出格式）
         for msg in reversed(recent):
             if msg.get("role") == "assistant":
                 content = msg.get("content", "")
-                # 计划文本特征：包含 "目标" + "---" 分隔
                 if "目标" in content and "---" in content and len(content) > 100:
                     plan_text_cache = content[:3000]
                     break
 
-        # 重建 execution_trace，让 supervisor 知道在计划流程中
         execution_trace.append({
             "node": "plan_generator",
             "plan_type": "custom",
@@ -250,7 +237,7 @@ def _restore_state_from_history(session_id: str) -> Optional[Dict[str, Any]]:
         })
 
         result = {
-            "plan_conversation_history": plan_conversation_history[-20:],  # 最多20条
+            "plan_conversation_history": plan_conversation_history[-20:],
             "plan_summary": plan_summary,
             "execution_trace": execution_trace,
         }
@@ -272,126 +259,119 @@ def get_thread_id(session_id: str) -> str:
 @router.post("/chat", response_model=OrchestrateResponse)
 async def orchestrate_chat(request: Request, body: OrchestrateRequest):
     """
-    LangGraph多Agent编排入口
-
-    流程：
-    1. Supervisor意图分类
-    2. 根据意图路由到对应Agent
-    3. 执行Agent
-    4. 返回结果
-
-    关键改进：
-    - 使用 checkpointer 持久化对话状态
-    - 支持多轮对话中的状态延续
+    LangGraph多Agent编排入口（非流式版本，保留兼容）
     """
     try:
-        # 从请求 Header 获取 Authorization token
         authorization = request.headers.get("Authorization")
         token = None
         if authorization and authorization.startswith("Bearer "):
             token = authorization[7:]
-        
-        # 设置请求上下文的 token（用于 create_plan 等需要认证的工具）
+
         from app.common.llm_factory import set_request_token
         set_request_token(token)
-        
-        # 重置工具调用计数，防止跨会话累积
+
         from app.common.langchain_tools import reset_tool_call_counts
         reset_tool_call_counts()
-        
-        print(f"[DEBUG] orchestrator: Authorization header: {authorization[:30] if authorization else 'None'}...")
-        print(f"[DEBUG] orchestrator: Token set: {'Yes' if token else 'No'}")
-        
-        # 使用提供的 session_id 或生成新的
-        # 重要：新会话必须生成新的 session_id，避免共享状态
-        session_id = body.session_id or generate_session_id()
 
-        # 获取图（带checkpointer）
+        session_id = body.session_id or generate_session_id()
         graph = get_graph()
         thread_id = get_thread_id(session_id)
 
-        # 执行图（使用thread_id持久化状态）
-        # 只传入新的 user_input，LangGraph 会自动从 checkpointer 恢复之前的状态
-        # 重要：从 doc_ids 或 capabilities.selected_doc_ids 中提取选中的文档ID
         capabilities_dict = body.capabilities.dict() if hasattr(body.capabilities, 'dict') else dict(body.capabilities)
-        # 优先使用顶层 doc_ids，其次使用 capabilities.selected_doc_ids
         selected_doc_ids = body.doc_ids if body.doc_ids else capabilities_dict.get("selected_doc_ids", [])
-        # 确保 selected_doc_ids 是字符串列表
         selected_doc_ids = [str(did) for did in selected_doc_ids] if selected_doc_ids else []
 
-        # 构建初始输入
         invoke_input = {
             "user_input": body.message,
             "session_id": session_id,
             "user_id": str(body.user_id) if body.user_id is not None else None,
             "capabilities": capabilities_dict,
             "selected_doc_ids": selected_doc_ids,
-            "rag_fallback_to_chat": False,  # 初始为 False，由 RAG 节点设置
+            "rag_fallback_to_chat": False,
         }
 
-        # checkpoint 不存在时（已过期），尝试从 Redis 会话历史重建 plan flow 状态
-        checkpoint = await _checkpointer.aget_next_version(None, "") if _checkpointer else None
-        existing_tuple = await _checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}}) if _checkpointer else None
-        if not existing_tuple:
-            restored = _restore_state_from_history(session_id)
-            if restored:
-                invoke_input.update(restored)
-                print(f"[DEBUG] orchestrator: checkpoint 已过期，从会话历史重建状态: plan_summary={restored.get('plan_summary', '')[:50]}")
+        if _checkpointer:
+            try:
+                existing_tuple = await _checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+                if not existing_tuple:
+                    restored = _restore_state_from_history(session_id)
+                    if restored:
+                        invoke_input.update(restored)
+            except Exception:
+                pass
 
         result = await graph.ainvoke(
             invoke_input,
             config={"configurable": {"thread_id": thread_id}}
         )
 
-        # 提取响应
         response_text = (
             result.get("final_response") or
             result.get("agent_output") or
             "抱歉，处理失败"
         )
 
-        # 检查是否被能力开关阻止
-        blocked = result.get("blocked_by_capability", False)
-        handoff_reason = result.get("handoff_reason")
-
-        # 提取计划元数据（供前端展示数据来源）
-        plan_metadata = result.get("plan_metadata")
-
         return OrchestrateResponse(
             response=response_text,
             intent=result.get("intent"),
             confidence=result.get("confidence", 0.0),
-            blocked_by_capability=blocked,
-            handoff_reason=handoff_reason,
+            blocked_by_capability=result.get("blocked_by_capability", False),
+            handoff_reason=result.get("handoff_reason"),
             execution_trace=result.get("execution_trace", []),
             session_id=session_id,
-            plan_metadata=plan_metadata,
+            plan_metadata=result.get("plan_metadata"),
         )
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        print(f"[ERROR] orchestrator: graph execution failed: {e}")
         raise HTTPException(status_code=500, detail=f"编排失败: {str(e)}")
 
 
-@router.post("/stream")
-async def orchestrate_stream(request: Request, body: OrchestrateRequest):
+@router.websocket("/ws/chat")
+async def websocket_chat(websocket: WebSocket):
     """
-    流式输出版本
+    WebSocket 实时流式聊天
 
-    SSE 协议实时推送：
-    - response 事件：节点输出快照（content 为当前完整响应文本）
-    - trace 事件：节点执行轨迹（用于前端调试面板）
-    - done 事件：流程结束，包含完整响应 + session_id + execution_trace
+    协议：
+    - 前端发送 JSON: {"message": "...", "session_id": "...", "user_id": "...", "capabilities": {...}, "doc_ids": [...]}
+    - 后端发送 JSON: {"type": "token"|"node_complete"|"done"|"error", ...}
 
-    前端处理：
-    1. 收到 response 事件 → 更新或追加 assistant 消息内容
-    2. 收到 trace 事件 → 追加到 debug 面板
-    3. 收到 done 事件 → 保存 session_id，标记流式结束
+    type=token: token 片段，实时追加
+    type=node_complete: LLM 生成结束，前端可解除加载状态
+    type=done: 完整流程结束，含最终响应
+    type=error: 错误信息
     """
-    # 从请求 Header 获取 Authorization token
-    authorization = request.headers.get("Authorization")
+    await websocket.accept()
+    set_websocket(websocket)
+    reset_streaming_complete()
+
+    try:
+        # 从前端获取第一条消息（建立连接后发送）
+        data = await websocket.receive_json()
+        await _handle_ws_message(websocket, data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "detail": str(e)})
+        except Exception:
+            pass
+    finally:
+        clear_websocket()
+        reset_streaming_complete()
+
+
+async def _handle_ws_message(websocket: WebSocket, data: dict):
+    """处理 WebSocket 消息并执行流式响应"""
+    message = data.get("message", "")
+    session_id = data.get("session_id") or generate_session_id()
+    user_id = data.get("user_id")
+    capabilities = data.get("capabilities", {})
+    doc_ids = data.get("doc_ids", [])
+
+    # 获取 token
+    authorization = data.get("authorization", "")
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
@@ -402,19 +382,17 @@ async def orchestrate_stream(request: Request, body: OrchestrateRequest):
     from app.common.langchain_tools import reset_tool_call_counts
     reset_tool_call_counts()
 
-    session_id = body.session_id or generate_session_id()
     graph = get_graph()
     thread_id = get_thread_id(session_id)
 
-    capabilities_dict = body.capabilities.dict() if hasattr(body.capabilities, 'dict') else dict(body.capabilities)
-    selected_doc_ids = body.doc_ids if body.doc_ids else capabilities_dict.get("selected_doc_ids", [])
+    selected_doc_ids = doc_ids if doc_ids else capabilities.get("selected_doc_ids", [])
     selected_doc_ids = [str(did) for did in selected_doc_ids] if selected_doc_ids else []
 
     invoke_input = {
-        "user_input": body.message,
+        "user_input": message,
         "session_id": session_id,
-        "user_id": str(body.user_id) if body.user_id is not None else None,
-        "capabilities": capabilities_dict,
+        "user_id": str(user_id) if user_id is not None else None,
+        "capabilities": capabilities,
         "selected_doc_ids": selected_doc_ids,
         "rag_fallback_to_chat": False,
     }
@@ -427,141 +405,84 @@ async def orchestrate_stream(request: Request, body: OrchestrateRequest):
                 restored = _restore_state_from_history(session_id)
                 if restored:
                     invoke_input.update(restored)
-                    log_stream_restore = True
-                else:
-                    log_stream_restore = False
-            else:
-                log_stream_restore = False
         except Exception:
-            log_stream_restore = False
-    else:
-        log_stream_restore = False
-
-    async def event_generator():
-        try:
-            accumulated_trace = []
-            final_response_text = ""
-            seen_response_text = ""
-            init_buffer()
-
-            queue: asyncio.Queue = asyncio.Queue()
-
-            # 生产者1: LangGraph graph.astream 产生 updates/values 事件
-            async def graph_producer():
-                try:
-                    async for chunk in graph.astream(
-                        invoke_input,
-                        config={"configurable": {"thread_id": thread_id}},
-                        stream_mode=["updates", "values"]
-                    ):
-                        await queue.put(("graph", chunk))
-                    await queue.put(("graph_done", None))
-                except Exception as e:
-                    await queue.put(("graph_error", str(e)))
-
-            # 生产者2: 轮询 token 缓冲，实现逐 token 打字机效果
-            POLL_INTERVAL = 0.03  # 30ms
-
-            async def token_producer():
-                while True:
-                    tokens_text = flush_tokens()
-                    if tokens_text:
-                        await queue.put(("token", tokens_text))
-                    await asyncio.sleep(POLL_INTERVAL)
-
-            # 启动两个生产者
-            graph_task = asyncio.create_task(graph_producer())
-            token_task = asyncio.create_task(token_producer())
-
-            graph_done = False
-            graph_error = None
-
-            while True:
-                source, data = await queue.get()
-
-                if source == "graph_done":
-                    graph_done = True
-                    # 所有节点执行完毕，停止 token 轮询
-                    token_task.cancel()
-                    # 处理积压的 tokens
-                    remaining = flush_tokens()
-                    if remaining:
-                        yield f"event: token\ndata: {json.dumps({'content': remaining}, ensure_ascii=False)}\n\n"
-                    break
-
-                elif source == "graph_error":
-                    graph_error = data
-                    token_task.cancel()
-                    break
-
-                elif source == "token":
-                    yield f"event: token\ndata: {json.dumps({'content': data}, ensure_ascii=False)}\n\n"
-
-                elif source == "graph":
-                    stream_type, payload = data
-
-                    if stream_type == "updates":
-                        for node_name, node_output in payload.items():
-                            if not isinstance(node_output, dict):
-                                continue
-
-                            response_text = (
-                                node_output.get("final_response") or
-                                node_output.get("agent_output") or
-                                ""
-                            )
-
-                            if response_text and response_text != seen_response_text:
-                                seen_response_text = response_text
-                                final_response_text = response_text
-                                yield f"event: response\ndata: {json.dumps({'content': response_text, 'node': node_name}, ensure_ascii=False)}\n\n"
-
-                            trace = node_output.get("execution_trace")
-                            if trace:
-                                new_traces = []
-                                for t in trace:
-                                    if t not in accumulated_trace:
-                                        accumulated_trace.append(t)
-                                        new_traces.append(t)
-                                if new_traces:
-                                    yield f"event: trace\ndata: {json.dumps({'traces': new_traces}, ensure_ascii=False)}\n\n"
-
-                                    if log_stream_restore and new_traces:
-                                        yield f"event: restore\ndata: {'{}'}\n\n"
-
-                    elif stream_type == "values":
-                        pass
-
-            if graph_error:
-                raise Exception(graph_error)
-
-            if not final_response_text:
-                final_response_text = "处理完成"
-
-            yield f"event: done\ndata: {json.dumps({'response': final_response_text, 'session_id': session_id, 'execution_trace': accumulated_trace, 'intent': execution_trace_to_intent(accumulated_trace)}, ensure_ascii=False)}\n\n"
-
-        except asyncio.CancelledError:
             pass
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            yield f"event: error\ndata: {json.dumps({'detail': str(e)}, ensure_ascii=False)}\n\n"
-        finally:
-            clear_token_buffer()
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive"
+    final_response_text = ""
+    accumulated_trace = []
+    streaming_complete_sent = False
+    preview_url = None
+    plan_id = None
+
+    try:
+        # 直接流式执行 LangGraph，token 通过 emit_token 实时发送
+        async for chunk in graph.astream(
+            invoke_input,
+            config={"configurable": {"thread_id": thread_id}},
+            stream_mode=["updates", "values"]
+        ):
+            stream_type, payload = chunk
+
+            if stream_type == "updates":
+                for node_name, node_output in payload.items():
+                    if not isinstance(node_output, dict):
+                        continue
+
+                    response_text = (
+                        node_output.get("final_response") or
+                        node_output.get("agent_output") or
+                        ""
+                    )
+
+                    if response_text:
+                        final_response_text = response_text
+
+                    # 捕获 plan_writer 生成的预览 URL 和 plan_id
+                    if node_output.get("preview_url"):
+                        preview_url = node_output["preview_url"]
+                    if node_output.get("plan_id"):
+                        plan_id = node_output["plan_id"]
+
+                    trace = node_output.get("execution_trace")
+                    if trace:
+                        for t in trace:
+                            if t not in accumulated_trace:
+                                accumulated_trace.append(t)
+
+        # 流式结束，发送 node_complete
+        await websocket.send_json({"type": "node_complete", "node": "end"})
+        streaming_complete_sent = True
+
+        # 发送 done
+        if not final_response_text:
+            final_response_text = "处理完成"
+
+        intent = execution_trace_to_intent(accumulated_trace)
+        done_payload = {
+            "type": "done",
+            "response": final_response_text,
+            "session_id": session_id,
+            "execution_trace": accumulated_trace,
+            "intent": intent,
         }
-    )
+        if preview_url:
+            done_payload["preview_url"] = preview_url
+        if plan_id:
+            done_payload["plan_id"] = plan_id
+
+        await websocket.send_json(done_payload)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        try:
+            await websocket.send_json({"type": "error", "detail": str(e)})
+        except Exception:
+            pass
 
 
 def execution_trace_to_intent(trace: list) -> str:
-    """从 execution_trace 推断 intent 名称（供 done 事件返回给前端）"""
+    """从 execution_trace 推断 intent 名称"""
     for t in trace:
         if isinstance(t, dict) and t.get("node"):
             node = t["node"]
@@ -576,33 +497,24 @@ def execution_trace_to_intent(trace: list) -> str:
 
 @router.post("/cancel")
 async def cancel_session(body: dict):
-    """
-    终止会话：清除计划流程状态和 LangGraph checkpoint
-
-    前端点击终止按钮时调用，重置会话到空闲状态
-    """
+    """终止会话"""
     session_id = body.get("session_id")
     if not session_id:
         raise HTTPException(status_code=400, detail="缺少 session_id")
 
     thread_id = get_thread_id(session_id)
 
-    # 1. 清除 ConversationState（内存中的任务状态）
     from ..service.state import reset_conversation_state
     reset_conversation_state(session_id)
 
-    # 2. 清除 LangGraph checkpoint（Redis 中的计划流程状态）
     try:
         global _checkpointer
         if _checkpointer and hasattr(_checkpointer, 'redis'):
-            import redis.asyncio as aioredis
             key = f"ckpt:{thread_id}"
             await _checkpointer.redis.delete(key)
-            print(f"[DEBUG] cancel: 已清除 checkpoint key={key}")
     except Exception as e:
         print(f"[WARN] cancel: 清除 checkpoint 失败: {e}")
 
-    print(f"[DEBUG] cancel: 会话 {session_id} 已终止，状态已清除")
     return {"status": "cancelled", "session_id": session_id}
 
 
@@ -614,3 +526,90 @@ async def health_check():
         "service": "LangGraph Orchestrator",
         "version": "1.0.0"
     }
+
+
+# 计划预览文件目录
+PLAN_PREVIEWS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+    "plan_previews"
+)
+
+
+@router.get("/plan-preview/{filename}", response_class=HTMLResponse)
+async def serve_plan_preview(filename: str):
+    """提供计划预览 HTML 文件（iframe 加载用）
+
+    安全说明：
+    - 仅允许 .html 文件
+    - 路径限制在 plan_previews 目录内
+    """
+    # 安全检查：只允许 .html 文件
+    if not filename.endswith('.html') or '/' in filename or '\\' in filename or '..' in filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+
+    filepath = os.path.join(PLAN_PREVIEWS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="预览文件不存在")
+
+    return FileResponse(filepath, media_type="text/html")
+
+
+@router.get("/plan-preview-url/{session_id}")
+async def get_plan_preview_url(session_id: str):
+    """获取最新的计划预览 URL
+
+    前端在 done 事件后调用此接口获取预览地址
+    """
+    if not os.path.exists(PLAN_PREVIEWS_DIR):
+        return {"preview_url": None}
+
+    # 查找该 session_id 最新的预览文件
+    prefix = session_id[:8]
+    candidates = []
+    for f in os.listdir(PLAN_PREVIEWS_DIR):
+        if f.startswith(prefix) and f.endswith('.html'):
+            filepath = os.path.join(PLAN_PREVIEWS_DIR, f)
+            candidates.append((filepath, os.path.getmtime(filepath)))
+
+    if not candidates:
+        return {"preview_url": None}
+
+    # 取最新文件
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    latest = os.path.basename(candidates[0][0])
+    return {"preview_url": f"/orchestrator/plan-preview/{latest}"}
+
+
+@router.get("/plan-previews")
+async def list_plan_previews():
+    """列出所有计划预览文件（调试用）"""
+    if not os.path.exists(PLAN_PREVIEWS_DIR):
+        return {"files": []}
+
+    files = []
+    for f in sorted(os.listdir(PLAN_PREVIEWS_DIR)):
+        if f.endswith('.html'):
+            filepath = os.path.join(PLAN_PREVIEWS_DIR, f)
+            stat = os.stat(filepath)
+            files.append({
+                "filename": f,
+                "url": f"/orchestrator/plan-preview/{f}",
+                "size": stat.st_size,
+                "modified": stat.st_mtime,
+            })
+
+    return {"files": files, "total": len(files)}
+
+
+@router.delete("/plan-previews/{filename}")
+async def delete_plan_preview(filename: str):
+    """删除指定的预览文件"""
+    if not filename.endswith('.html') or '/' in filename or '\\' in filename or '..' in filename:
+        raise HTTPException(status_code=400, detail="无效的文件名")
+
+    filepath = os.path.join(PLAN_PREVIEWS_DIR, filename)
+    if not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    os.remove(filepath)
+    return {"status": "deleted", "filename": filename}

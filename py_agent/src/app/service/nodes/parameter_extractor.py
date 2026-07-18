@@ -1,21 +1,22 @@
 """
 Parameter Extractor 节点 - 工具选择 + 参数提取
 
-流程：
-1. 用 Tool RAG 从 plan_summary 中检索相关工具
-2. LLM 对候选工具打分排序 + 从 plan_summary 中提取参数值
+流程（MCP 版）：
+1. 从 MCP server 获取所有可用工具 schema
+2. LLM 根据 plan_summary 选择最相关的工具 + 提取参数值
 3. 输出 ranked_tools 给 tool_executor
 
-设计思路：
-- Tool RAG 召回候选工具（代码做，确定性强）
-- LLM 只做打分排序 + 参数提取（难度降低）
-- 拆分避免小模型同时"选工具"和"填参数"出错
+MCP 替代了旧的 Tool RAG：
+- 不需要向量库检索，直接拿全部工具 schema
+- LLM 看工具描述就能判断该用哪个
+- 新增工具零成本（@mcp.tool 即注册即用）
 """
 from prompts.parameter_extractor import TOOL_SELECTOR_SYSTEM_PROMPT, TOOL_SELECTOR_PROMPT_TEMPLATE
+from src.app.common.llm_factory import extract_text
 
 
 async def parameter_extractor_node(state) -> dict:
-    """Parameter Extractor 节点：Tool RAG 检索工具 + LLM 打分/参数提取"""
+    """Parameter Extractor 节点：MCP 工具发现 + LLM 打分/参数提取"""
     short_term = state.get("short_term_memory", [])
     long_term = state.get("long_term_memory", [])
     def _wm(d: dict) -> dict:
@@ -26,7 +27,7 @@ async def parameter_extractor_node(state) -> dict:
     try:
         from app.common.llm_factory import get_llm
         from langchain_core.messages import HumanMessage, SystemMessage
-        from src.app.service.tool_rag import retrieve_relevant_tools
+        from src.app.mcp.mcp_client import get_mcp_adapter
 
         plan_summary = state.get("plan_summary", "")
         user_id = state.get("user_id")
@@ -46,26 +47,49 @@ async def parameter_extractor_node(state) -> dict:
                 ]
             })
 
-        # 1. Tool RAG 检索候选工具（双路召回 + LLM Rerank）
-        candidate_tools = await retrieve_relevant_tools(plan_summary, top_k=7)
-        print(f"[DEBUG] parameter_extractor: 检索到 {len(candidate_tools)} 个候选工具")
+        # 1. 从 MCP 获取所有可用工具（替代旧的 Tool RAG 检索）
+        from ..stream_writer import emit_log
+        await emit_log("正在分析需求，选择需要调用的工具...")
 
-        if not candidate_tools:
+        mcp_adapter = await get_mcp_adapter()
+        if not mcp_adapter.is_connected:
+            print("[DEBUG] parameter_extractor: MCP 未连接，跳过工具选择")
+            await emit_log("工具服务未连接，跳过工具调用")
             return _wm({
                 "ranked_tools": [],
-                "parameter_extraction_status": "no_tools_found",
+                "parameter_extraction_status": "mcp_not_connected",
                 "execution_trace": [
                     {
                         "node": "parameter_extractor",
-                        "status": "no_tools",
-                        "reason": "Tool RAG 未检索到相关工具"
+                        "status": "skipped",
+                        "reason": "MCP 未连接"
                     }
                 ]
             })
 
+        # 把所有 MCP tools 转为候选格式
+        mcp_tools = mcp_adapter.get_tools_schema()
+        candidate_tools = []
+        for t in mcp_tools:
+            func = t["function"]
+            # 从参数 schema 中提取 required 和 optional slots
+            params = func.get("parameters", {})
+            properties = params.get("properties", {})
+            required = params.get("required", [])
+            optional = [k for k in properties if k not in required]
+            candidate_tools.append({
+                "tool_name": func["name"],
+                "description": func.get("description", ""),
+                "required_slots": required,
+                "optional_slots": optional,
+            })
+
+        print(f"[DEBUG] parameter_extractor: MCP 提供 {len(candidate_tools)} 个候选工具")
+        await emit_log(f"从 {len(candidate_tools)} 个工具中选择最相关的...")
+
         # 2. LLM 打分排序 + 参数提取
         tools_desc = "\n".join([
-            f"- {t['tool_name']}: 需要{t['required_slots']}, 可选{t['optional_slots']}"
+            f"- {t['tool_name']}: {t['description']}（需要{t['required_slots']}, 可选{t['optional_slots']}）"
             for t in candidate_tools
         ])
 
@@ -79,11 +103,29 @@ async def parameter_extractor_node(state) -> dict:
             SystemMessage(content=TOOL_SELECTOR_SYSTEM_PROMPT),
             HumanMessage(content=prompt)
         ])
-        raw = result.content if hasattr(result, "content") else str(result)
+        raw = extract_text(result.content) if hasattr(result, "content") else str(result)
+
+        # 打印 LLM 原始输出，方便调试参数提取问题
+        print(f"[DEBUG] parameter_extractor: LLM 原始输出:\n{raw}")
+
+        # 打印 MCP 原始 schema，诊断 parameters 结构
+        if mcp_tools:
+            print(f"[DEBUG] parameter_extractor: MCP 原始 schema 示例 (前2个):")
+            for t in mcp_tools[:2]:
+                func = t["function"]
+                print(f"  - {func['name']}: parameters={func.get('parameters', {})}")
 
         # 3. 解析 LLM 输出
         ranked_tools = _parse_rerank_output(raw, candidate_tools)
         print(f"[DEBUG] parameter_extractor: 选中 {len(ranked_tools)} 个工具")
+        for t in ranked_tools:
+            print(f"[DEBUG] parameter_extractor:   {t['tool']} -> params={t['params']}")
+            missing = [s for s in t["required_slots"] if not t["params"].get(s)]
+            if missing:
+                print(f"[WARN] parameter_extractor: {t['tool']} 缺参数: {missing}")
+
+        tool_names = [t["tool"] for t in ranked_tools]
+        await emit_log(f"已选择 {len(ranked_tools)} 个工具：{', '.join(tool_names)}")
 
         return _wm({
             "ranked_tools": ranked_tools,

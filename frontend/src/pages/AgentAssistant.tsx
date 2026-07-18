@@ -1,5 +1,9 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { BookOpen, History, ChevronLeft, ChevronRight } from 'lucide-react';
 import { agentApi } from '../services/api';
+import VisualizationPanel from '../components/VisualizationPanel';
+import { extractMermaidCode, stripMermaidFromText } from '../utils/mermaidExtractor';
 
 interface Message {
   id: string;
@@ -11,12 +15,15 @@ interface Message {
   isStreaming?: boolean;
 }
 
+const AI_API_BASE = 'http://127.0.0.1:8000';
+
 const AgentAssistant: React.FC = () => {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
       role: 'assistant',
-      content: '你好！我是 PlanHub 全智能助手 🤖\n\n我可以帮你：\n• 💬 聊天对话\n• 📚 查询知识库\n• 📋 制定计划\n• 🛠️ 执行各种任务\n\n试试发送消息吧！',
+      content: '你好！我是 PlanHub 全智能助手\n\n我可以帮你：\n• 聊天对话\n• 查询知识库\n• 制定计划\n• 执行各种任务\n\n试试发送消息吧！',
       intent: 'greeting',
       timestamp: new Date()
     }
@@ -27,8 +34,54 @@ const AgentAssistant: React.FC = () => {
   const [useRag, setUseRag] = useState(false);
   const [usePlanMode, setUsePlanMode] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showVisualization, setShowVisualization] = useState(false);
+  const [mermaidCode, setMermaidCode] = useState<string>('');
+  const [visualTitle, setVisualTitle] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // 历史记录面板：默认展开
+  const [showHistory, setShowHistory] = useState(true);
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // 加载历史记录
+  const loadConversations = useCallback(async () => {
+    setLoadingHistory(true);
+    try {
+      const userId = 'standalone_user';
+      const res = await fetch(`${AI_API_BASE}/conversations?user_id=${userId}&module=orchestrator`);
+      const data = await res.json();
+      setConversations(data.conversations || []);
+    } catch (err) {
+      console.error('Load conversations error:', err);
+    }
+    setLoadingHistory(false);
+  }, []);
+
+  useEffect(() => {
+    loadConversations();
+  }, [loadConversations]);
+
+  // 加载某个历史会话
+  const loadConversation = async (sid: string) => {
+    try {
+      const res = await fetch(`${AI_API_BASE}/conversations/${sid}`);
+      const data = await res.json();
+      if (data.history && data.history.length > 0) {
+        const loadedMessages: Message[] = data.history.map((msg: any, idx: number) => ({
+          id: `loaded_${idx}`,
+          role: msg.role === 'user' ? 'user' : 'assistant',
+          content: msg.content || '',
+          timestamp: new Date(msg.timestamp || Date.now()),
+        }));
+        setMessages(loadedMessages);
+        setSessionId(sid);
+      }
+    } catch (err) {
+      console.error('Load conversation error:', err);
+    }
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -59,113 +112,134 @@ const AgentAssistant: React.FC = () => {
       { id: aiMsgId, role: 'assistant', content: '', isStreaming: true, timestamp: new Date() }
     ]);
 
-    abortControllerRef.current = new AbortController();
+    let lastContent = '';
+    let finalSessionId = sessionId;
 
-    try {
-      const { body } = await agentApi.chatStream(
-        inputMessage,
-        sessionId,
-        'anonymous',
-        undefined
-      );
+    // 使用 WebSocket 实时流式通信
+    const ws = agentApi.chatWebSocket(
+      inputMessage,
+      sessionId,
+      'anonymous',
+      undefined,
+      // onMessage
+      (data) => {
+        if (data.type === 'token') {
+          // 逐 token 实时追加（无延迟、无轮询）
+          lastContent += data.content || '';
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiMsgId
+                ? { ...m, content: lastContent, isStreaming: true }
+                : m
+            )
+          );
+        } else if (data.type === 'node_complete') {
+          // LLM 生成结束 → 立即解除加载状态
+          setIsLoading(false);
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiMsgId
+                ? { ...m, isStreaming: false }
+                : m
+            )
+          );
+        } else if (data.type === 'done') {
+          // 最终完成
+          lastContent = data.response || lastContent;
+          finalSessionId = data.session_id || finalSessionId;
 
-      const reader = body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let lastContent = '';
-      let finalSessionId = sessionId;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // 按 SSE 事件分割（\n\n）
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-
-        for (const part of parts) {
-          if (!part.trim()) continue;
-
-          let eventType = 'message';
-          let dataStr = '';
-          for (const line of part.split('\n')) {
-            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
-            else if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
+          // 提取 Mermaid 代码
+          const mermaid = extractMermaidCode(lastContent);
+          if (mermaid) {
+            setMermaidCode(mermaid);
+            setShowVisualization(true);
+            const intentLabel: Record<string, string> = {
+              plan: '📋 计划时间轴',
+              visualize: '📊 可视化',
+              chat: '💬 图解',
+              rag: '📚 知识图谱',
+            };
+            setVisualTitle(intentLabel[data.intent || 'chat'] || '📊 可视化');
           }
-          if (!dataStr) continue;
 
-          try {
-            const data = JSON.parse(dataStr);
+          const displayContent = mermaid
+            ? stripMermaidFromText(lastContent)
+            : lastContent;
 
-            if (eventType === 'response') {
-              // 节点输出快照 → 实时更新 assistant 消息内容
-              lastContent = data.content || lastContent;
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === aiMsgId
-                    ? { ...m, content: lastContent }
-                    : m
-                )
-              );
-            } else if (eventType === 'done') {
-              // 最终完成 → 用完整响应覆盖，保留原有内容兜底
-              lastContent = data.response || lastContent;
-              finalSessionId = data.session_id || finalSessionId;
-              setMessages(prev =>
-                prev.map(m =>
-                  m.id === aiMsgId
-                    ? {
-                        ...m,
-                        content: lastContent,
-                        isStreaming: false,
-                        intent: data.intent,
-                        trace: data.execution_trace,
-                      }
-                    : m
-                )
-              );
-            }
-          } catch {
-            // JSON 解析失败则略过
-          }
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiMsgId
+                ? {
+                    ...m,
+                    content: displayContent,
+                    isStreaming: false,
+                    intent: data.intent,
+                    trace: data.execution_trace,
+                  }
+                : m
+            )
+          );
+          setSessionId(finalSessionId);
+          setIsLoading(false);
+        } else if (data.type === 'error') {
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiMsgId
+                ? {
+                    ...m,
+                    content: `抱歉，请求失败：${data.detail || '未知错误'}`,
+                    isStreaming: false,
+                    intent: 'error',
+                  }
+                : m
+            )
+          );
+          setIsLoading(false);
         }
+      },
+      // onError
+      () => {
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === aiMsgId
+              ? {
+                  ...m,
+                  content: '连接失败，请检查网络',
+                  isStreaming: false,
+                  intent: 'error',
+                }
+              : m
+          )
+        );
+        setIsLoading(false);
+      },
+      // onClose
+      () => {
+        // 确保加载状态关闭
+        setIsLoading(false);
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === aiMsgId && m.isStreaming
+              ? { ...m, isStreaming: false }
+              : m
+          )
+        );
       }
+    );
 
-      // 流结束但没收到 done → 手动收尾
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === aiMsgId && m.isStreaming
-            ? { ...m, isStreaming: false }
-            : m
-        )
-      );
-      setSessionId(finalSessionId);
-    } catch (error: any) {
-      console.error('Chat stream error:', error);
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === aiMsgId
-            ? {
-                ...m,
-                content: `抱歉，请求失败：${error.message || '未知错误'}`,
-                isStreaming: false,
-                intent: 'error',
-              }
-            : m
-        )
-      );
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
-    }
+    // 保存 ws 引用以便停止
+    abortControllerRef.current = ws as any;
   };
 
   // 停止生成
   const handleStopGeneration = () => {
     if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+      // WebSocket 或 AbortController 都支持 close/abort
+      if (abortControllerRef.current instanceof WebSocket) {
+        abortControllerRef.current.close();
+      } else {
+        abortControllerRef.current.abort();
+      }
     }
   };
 
@@ -218,10 +292,85 @@ const AgentAssistant: React.FC = () => {
   return (
     <div style={{
       display: 'flex',
-      flexDirection: 'column',
       height: '100%',
-      backgroundColor: '#f9fafb'
+      backgroundColor: '#f9fafb',
+      overflow: 'hidden',
     }}>
+      {/* 最左侧：工具按钮栏 */}
+      <div style={styles.toolbar}>
+        <button
+          style={styles.toolbarBtn}
+          onClick={() => navigate('/plan-library')}
+          title="计划库"
+        >
+          <BookOpen size={20} />
+          <span style={styles.toolbarLabel}>计划库</span>
+        </button>
+        <button
+          style={{
+            ...styles.toolbarBtn,
+            ...(showHistory ? styles.toolbarBtnActive : {}),
+          }}
+          onClick={() => setShowHistory(!showHistory)}
+          title="历史记录"
+        >
+          <History size={20} />
+          <span style={styles.toolbarLabel}>历史</span>
+        </button>
+      </div>
+
+      {/* 历史记录面板（可收起） */}
+      {showHistory && (
+        <div style={styles.historyPanel}>
+          <div style={styles.historyHeader}>
+            <span style={styles.historyTitle}>历史记录</span>
+            <button
+              style={styles.historyCloseBtn}
+              onClick={() => setShowHistory(false)}
+              title="收起"
+            >
+              <ChevronLeft size={16} />
+            </button>
+          </div>
+          <div style={styles.historyList}>
+            {loadingHistory ? (
+              <div style={styles.historyEmpty}>加载中...</div>
+            ) : conversations.length === 0 ? (
+              <div style={styles.historyEmpty}>暂无历史记录</div>
+            ) : (
+              conversations.map((conv: any) => (
+                <div
+                  key={conv.session_id}
+                  style={{
+                    ...styles.historyItem,
+                    ...(conv.session_id === sessionId ? styles.historyItemActive : {}),
+                  }}
+                  onClick={() => loadConversation(conv.session_id)}
+                >
+                  <div style={styles.historyItemTitle}>
+                    {conv.title || conv.session_id.slice(0, 8)}
+                  </div>
+                  <div style={styles.historyItemDate}>
+                    {conv.last_time
+                      ? new Date(conv.last_time).toLocaleDateString('zh-CN')
+                      : ''}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 中间：聊天区域 */}
+      <div style={{
+        flex: showVisualization ? '1' : '1 1 100%',
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        minWidth: 0,
+        transition: 'flex 0.3s ease',
+      }}>
       {/* 头部 */}
       <div style={{
         padding: '20px 24px',
@@ -594,8 +743,130 @@ const AgentAssistant: React.FC = () => {
           50% { opacity: 0; }
         }
       `}</style>
+      </div>
+
+      {/* 右侧：可视化面板 */}
+      {showVisualization && (
+        <div style={{
+          width: '50%',
+          minWidth: '400px',
+          height: '100%',
+          flexShrink: 0,
+        }}>
+          <VisualizationPanel
+            mermaidCode={mermaidCode}
+            title={visualTitle}
+            onClose={() => setShowVisualization(false)}
+          />
+        </div>
+      )}
     </div>
   );
 };
 
 export default AgentAssistant;
+
+// 局部样式（新增的工具栏和历史面板）
+const styles: Record<string, React.CSSProperties> = {
+  toolbar: {
+    width: '60px',
+    backgroundColor: '#fff',
+    borderRight: '1px solid #e5e7eb',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    padding: '16px 8px',
+    gap: '8px',
+    flexShrink: 0,
+  },
+  toolbarBtn: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+    width: '100%',
+    padding: '10px 4px',
+    border: '1px solid transparent',
+    borderRadius: '10px',
+    backgroundColor: 'transparent',
+    cursor: 'pointer',
+    color: '#64748b',
+    fontSize: '11px',
+    transition: 'all 0.15s',
+  },
+  toolbarBtnActive: {
+    backgroundColor: '#eef2ff',
+    color: '#6366f1',
+    borderColor: '#c7d2fe',
+  },
+  toolbarLabel: {
+    fontSize: '10px',
+    fontWeight: 500,
+    whiteSpace: 'nowrap',
+  },
+  historyPanel: {
+    width: '220px',
+    backgroundColor: '#fff',
+    borderRight: '1px solid #e5e7eb',
+    display: 'flex',
+    flexDirection: 'column',
+    flexShrink: 0,
+  },
+  historyHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: '12px 16px',
+    borderBottom: '1px solid #e5e7eb',
+    flexShrink: 0,
+  },
+  historyTitle: {
+    fontSize: '14px',
+    fontWeight: 600,
+    color: '#1a1a2e',
+  },
+  historyCloseBtn: {
+    background: 'none',
+    border: 'none',
+    cursor: 'pointer',
+    color: '#94a3b8',
+    padding: '4px',
+    borderRadius: '4px',
+    display: 'flex',
+    alignItems: 'center',
+  },
+  historyList: {
+    flex: 1,
+    overflowY: 'auto',
+    padding: '8px',
+  },
+  historyEmpty: {
+    padding: '24px 16px',
+    textAlign: 'center',
+    fontSize: '13px',
+    color: '#94a3b8',
+  },
+  historyItem: {
+    padding: '10px 12px',
+    borderRadius: '8px',
+    cursor: 'pointer',
+    marginBottom: '4px',
+    transition: 'all 0.15s',
+  },
+  historyItemActive: {
+    backgroundColor: '#eef2ff',
+  },
+  historyItemTitle: {
+    fontSize: '13px',
+    fontWeight: 500,
+    color: '#1a1a2e',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    marginBottom: '2px',
+  },
+  historyItemDate: {
+    fontSize: '11px',
+    color: '#94a3b8',
+  },
+};

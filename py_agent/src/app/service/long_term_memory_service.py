@@ -126,7 +126,7 @@ class LongTermMemoryService:
             return []
 
         try:
-            from app.common.llm_factory import get_llm
+            from app.common.llm_factory import get_llm, extract_text
             from langchain_core.messages import HumanMessage
 
             llm = get_llm(temperature=0.1)
@@ -142,7 +142,8 @@ class LongTermMemoryService:
             )
 
             result = await llm.ainvoke([HumanMessage(content=prompt)])
-            raw = result.content if hasattr(result, "content") else str(result)
+            # 使用 extract_text 处理 thinking 模型返回的结构化内容
+            raw = extract_text(result.content) if hasattr(result, "content") else str(result)
             raw = raw.strip()
 
             # 解析 JSON
@@ -189,7 +190,7 @@ class LongTermMemoryService:
     async def synthesize_profile(self, user_id: str) -> Optional[str]:
         """定期提炼用户画像，存入 Redis"""
         try:
-            from app.common.llm_factory import get_llm
+            from app.common.llm_factory import get_llm, extract_text
             from langchain_core.messages import HumanMessage
             from app.dao.redis_dao import redis_client
 
@@ -204,7 +205,7 @@ class LongTermMemoryService:
 
             llm = get_llm(temperature=0.3)
             result = await llm.ainvoke([HumanMessage(content=prompt)])
-            profile = result.content.strip() if hasattr(result, "content") else str(result).strip()
+            profile = extract_text(result.content).strip() if hasattr(result, "content") else str(result).strip()
 
             if profile:
                 # 存入 Redis，TTL 7天

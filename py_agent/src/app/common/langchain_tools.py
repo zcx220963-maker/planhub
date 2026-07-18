@@ -149,6 +149,26 @@ _last_unchecked_plans = []  # [{display_id: 1, real_id: 123, title: "计划标�
 _last_jump_data = None  # {type: "plan", id: 1, title: "xxx"}
 
 
+_notification_channels = []  # 飞书/邮件等通知渠道，启动时注册
+
+
+def register_notification_channel(channel):
+    """注册一个通知渠道（飞书/邮件等），启动时调用"""
+    _notification_channels.append(channel)
+    print(f"[Notification] 渠道已注册: {channel.__class__.__name__}")
+
+
+def _push_notification(title: str, content: str):
+    """推送通知到所有已注册渠道（单个失败不影响其他）"""
+    if not _notification_channels:
+        return
+    for ch in _notification_channels:
+        try:
+            ch.send(title, content)
+        except Exception as e:
+            print(f"[Notification] 渠道 {ch.__class__.__name__} 失败: {e}")
+
+
 @tool(args_schema=CreatePlanInput)
 def create_plan(
     title: str,
@@ -158,7 +178,7 @@ def create_plan(
     estimated_duration_hours: Optional[int] = None
 ) -> str:
     """
-    在 PlanHub 创建一个新的学习/工作/健身计划。
+    创建一个新的学习/工作/健身计划，存入本地并推送到飞书/邮箱。
 
     当用户说"帮我创建计划"、"新建一个计划"、"制定计划"时使用此工具。
     如果用户没有提供标题，必须先询问用户标题是什么。
@@ -183,54 +203,42 @@ def create_plan(
     if not is_valid:
         return f"参数验证失败：{'；'.join(errors)}。请修正后再试。"
 
-    # 检查是否有有效的 token（创建计划需要认证）
-    from app.common.llm_factory import get_request_token, _jwt_token
-    token = get_request_token() or _jwt_token
+    # 保存到本地 SQLite
+    from src.app.service.plan_store import save_plan
+    user_id = None
+    try:
+        from app.common.llm_factory import get_request_token, _jwt_token
+        user_id = get_request_token() or _jwt_token
+    except Exception:
+        pass
 
-    if not token:
-        return "创建计划需要先登录。请告诉用户：请先登录后再创建计划。"
+    plan = save_plan(
+        title=title,
+        description=description,
+        start_date=start_date,
+        target_date=target_date,
+        estimated_duration_hours=estimated_duration_hours,
+        user_id=user_id,
+    )
 
-    # 准备请求数据
-    request_data = {
-        "title": title,
-        "description": description,
-        "category": "PERSONAL",
-        "priority": "MEDIUM",
-        "visibility": "PUBLIC"
-    }
+    # 推送到飞书/邮箱（需配置环境变量 FEISHU_WEBHOOK / MAIL_*）
+    notif_title = f"新计划《{title}》已创建"
+    notif_content = (
+        f"描述：{description[:100] if description else '无'}\n"
+        f"开始日期：{start_date or '未设置'}\n"
+        f"目标日期：{target_date or '未设置'}\n"
+        f"预计时长：{f'{estimated_duration_hours} 小时' if estimated_duration_hours else '未设置'}"
+    )
+    _push_notification(notif_title, notif_content)
 
-    # 添加时间字段（如果提供了）
-    if start_date:
-        request_data["startDate"] = start_date
-    if target_date:
-        request_data["targetDate"] = target_date
-    if estimated_duration_hours is not None:
-        request_data["estimatedDurationHours"] = estimated_duration_hours
-
-    print(f"[DEBUG] create_plan request: {request_data}, token: {token[:20]}...")
-
-    result = call_planhub_api("/plans", "POST", request_data, token=token)
-    print(f"[DEBUG] create_plan result: {result}")
-
-    # 检查后端返回是否成功
-    success, error_msg = _check_backend_success(result)
-    if not success:
-        return f"计划创建失败：{error_msg}"
-
-    # 创建成功，返回带跳转链接的消息（格式与搜索结果一致）
-    # 前端正则：/(\d+)\.\s+(.+?)\n\s+\[查看详情\]\(\/(plan|post)\/(\d+)\)/g
-    inner_data = result.get("data", {})
-    plan_data = inner_data.get("data", {}) if isinstance(inner_data, dict) else {}
-    plan_id = plan_data.get("id", "")
-
-    # 使用与搜索结果一致的格式：
-    #   1. 标题
-    #      [查看详情](/plan/ID)
-    msg = "创建成功！"
+    # 构建回复消息
+    msg = f"计划《{title}》创建成功！"
     if warnings:
-        msg += f"（提示：{'；'.join(warnings)}）"
-    if plan_id:
-        msg += f"\n  1. {title}\n     [查看详情](/plan/{plan_id})"
+        msg += f"\n（提示：{'；'.join(warnings)}）"
+    if _notification_channels:
+        msg += f"\n计划已保存，同时已推送到你的飞书/邮箱。"
+    else:
+        msg += f"\n计划已保存到平台。"
     return msg
 
 

@@ -446,56 +446,9 @@ export const planAssistantApi = {
   },
 
   /**
-   * WebSocket 流式聊天 — 实时无延迟
-   * 返回 WebSocket 实例
-   * 事件类型: token | node_complete | done | error
-   *
-   * 开发模式下直接连接 Python AI 服务 WebSocket（绕过 Java 代理）
-   * 生产模式应通过 Java 后端 WebSocket 代理
-   */
-  chatWebSocket: (
-    message: string,
-    sessionId?: string,
-    userId?: string | number,
-    docIds?: string[],
-    onMessage?: (data: any) => void,
-    onError?: (error: Event) => void,
-    onClose?: (event: CloseEvent) => void
-  ): WebSocket => {
-    const token = localStorage.getItem('token') || '';
-    // 直接连接 Python AI 服务 WebSocket
-    // Python 服务默认运行在 http://127.0.0.1:8000
-    const AI_WS_URL = 'ws://127.0.0.1:8000/orchestrator/ws/chat';
-    const ws = new WebSocket(AI_WS_URL);
-
-    ws.onopen = () => {
-      // 连接建立后发送消息
-      ws.send(JSON.stringify({
-        message,
-        session_id: sessionId || undefined,
-        user_id: userId || undefined,
-        doc_ids: docIds && docIds.length > 0 ? docIds : undefined,
-        authorization: token ? `Bearer ${token}` : '',
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        onMessage?.(data);
-      } catch {
-        // 忽略解析失败
-      }
-    };
-
-    ws.onerror = onError || (() => {});
-    ws.onclose = onClose || (() => {});
-
-    return ws;
-  },
-
-  /**
-   * 流式编排 — 返回 ReadableStream 供前端消费 SSE（保留兼容）
+   * 流式编排 — 返回 ReadableStream 供前端消费 SSE
+   * 后端 Java /api/ai/orchestrator/stream 本身是 Flux<byte[]>
+   * 前端通过 fetch + getReader() 拿到原始字节流
    */
   chatStream: async (
     message: string,

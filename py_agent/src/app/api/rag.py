@@ -717,64 +717,38 @@ def hybrid_search(query: str, top_k: int = 3, fetch_k: int = 20,
     k_docs = bm25_search(query, top_n=fetch_k, doc_ids=doc_ids, user_id=user_id)
     retrieval_info["bm25_count"] = len(k_docs)
 
-    # 3. 合并（按 doc_id+content 去重），取并集
-    # 使用字典去重: key = (doc_id, content前50字符)
-    merged = {}
-    vector_scores = {}
-    bm25_scores = {}
+    # 3. 合并（按 doc_id+content 去重），用 RRF（Reciprocal Rank Fusion）融合排名
+    # RRF 公式: RRF_score(d) = Σ 1/(k + rank_i(d))，k=60（平滑常数）
+    # 排名从 1 开始（rank=1 是最高分），不在某路中的文档 rank=∞（贡献为 0）
+    RRF_K = 60  # 标准 RRF 平滑常数，越小越偏向排名靠前的文档
 
-    # 归一化向量分数到 [0, 1]
-    if v_docs:
-        sims = [float(d.metadata.get("similarity", 0.5) if d.metadata.get("similarity") is not None else 0.5) for d in v_docs]
-        max_sim = max(sims) if sims else 1.0
-        min_sim = min(sims) if sims else 0.0
-        for i, d in enumerate(v_docs):
-            score_norm = (sims[i] - min_sim) / (max_sim - min_sim + 1e-9)
-            vector_scores[i] = score_norm
-            key = (str(d.metadata.get("doc_id", "")), d.page_content[:50])
-            merged[key] = {
-                "doc": d,
-                "vector_score": score_norm,
-                "bm25_score": 0.0,
-            }
+    merged = {}  # key -> {"doc": Document, "rrf_score": float}
 
-    # 归一化 BM25 分数到 [0, 1]
-    if k_docs:
-        scores = [d.metadata.get("bm25_score", 0.0) for d in k_docs]
-        max_b = max(scores) if scores else 1.0
-        min_b = min(scores) if scores else 0.0
-        for i, d in enumerate(k_docs):
-            score_norm = (scores[i] - min_b) / (max_b - min_b + 1e-9)
-            bm25_scores[i] = score_norm
-            key = (str(d.metadata.get("doc_id", "")), d.page_content[:50])
-            if key in merged:
-                merged[key]["bm25_score"] = score_norm
-            else:
-                merged[key] = {
-                    "doc": d,
-                    "vector_score": 0.0,
-                    "bm25_score": score_norm,
-                }
+    # 向量检索排名
+    for rank, d in enumerate(v_docs, start=1):
+        key = (str(d.metadata.get("doc_id", "")), d.page_content[:50])
+        if key not in merged:
+            merged[key] = {"doc": d, "rrf_score": 0.0}
+        merged[key]["rrf_score"] += 1.0 / (RRF_K + rank)
 
-    # 计算最终融合分数（加权平均: 向量 0.5, BM25 0.5）
-    # 增加BM25权重，让关键词匹配更重要，避免语义相似但不含关键信息的文档被优先选中
-    VECTOR_WEIGHT = 0.5
-    BM25_WEIGHT = 0.5
-    ranked = []
+    # BM25 检索排名
+    for rank, d in enumerate(k_docs, start=1):
+        key = (str(d.metadata.get("doc_id", "")), d.page_content[:50])
+        if key not in merged:
+            merged[key] = {"doc": d, "rrf_score": 0.0}
+        merged[key]["rrf_score"] += 1.0 / (RRF_K + rank)
+
+    # 记录每路排名到 metadata（方便调试）
     for key, info in merged.items():
-        final_score = VECTOR_WEIGHT * info["vector_score"] + BM25_WEIGHT * info["bm25_score"]
         doc = info["doc"]
-        doc.metadata["final_score"] = round(final_score, 4)
-        doc.metadata["vector_score_norm"] = round(info["vector_score"], 4)
-        doc.metadata["bm25_score_norm"] = round(info["bm25_score"], 4)
-        ranked.append((final_score, doc))
+        doc.metadata["final_score"] = round(info["rrf_score"], 6)
 
-    # 按最终分数降序排序
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    final_docs = [doc for _, doc in ranked[:top_k]]
+    # 按 RRF 分数降序排序
+    ranked = sorted(merged.values(), key=lambda x: x["rrf_score"], reverse=True)
+    final_docs = [info["doc"] for info in ranked[:top_k]]
 
     retrieval_info["merged_count"] = len(final_docs)
-    retrieval_info["fusion"] = f"vector_weight={VECTOR_WEIGHT}, bm25_weight={BM25_WEIGHT}"
+    retrieval_info["fusion"] = f"RRF(k={RRF_K})"
 
     return final_docs, retrieval_info
 
@@ -812,40 +786,41 @@ def llm_rerank(question: str, candidate_docs: List[Document], top_k: int,
         preview_list=json.dumps(preview_list, ensure_ascii=False, indent=2),
     )
     # 调用 LLM（以简单字符串方式调用）
-    try:
-        from langchain_core.messages import HumanMessage, SystemMessage
-        messages = [
-            SystemMessage(content=LLM_RERANK_SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ]
-        resp = llm.invoke(messages)
-        raw = resp.content if hasattr(resp, "content") else str(resp)
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from src.app.common.llm_factory import extract_text
+    messages = [
+        SystemMessage(content=LLM_RERANK_SYSTEM_PROMPT),
+        HumanMessage(content=prompt),
+    ]
+    resp = llm.invoke(messages)
+    raw = resp.content if hasattr(resp, "content") else str(resp)
 
-        # 解析 JSON（容错处理：从 { 开始，} 结束）
-        text = raw.strip()
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            json_text = text[start:end+1]
-            data = json.loads(json_text)
-            scores = data.get("scores", [])
-            # 建立 id -> score 映射
-            score_map = {int(s["id"]): float(s["score"]) for s in scores}
-            # 用 LLM 打分覆盖 final_score，并设置分数
-            scored = []
-            for i, d in enumerate(candidate_docs):
-                s = score_map.get(i, d.metadata.get("final_score", 0.0) * 5)
-                d.metadata["rerank_score"] = round(float(s), 2)
-                scored.append((s, d))
-            # 排序，取前 top_k
-            scored.sort(key=lambda x: x[0], reverse=True)
-            top = [d for _, d in scored[:top_k]]
-            return top, {"rerank_count": len(top), "llm_scored": True}
-    except Exception as e:
-        print(f"[WARN] LLM 重排序失败，回退到原始混合检索: {e}")
+    # extract_text 兼容 thinking 模型（返回 list）和普通模型（返回 str）
+    text = extract_text(raw).strip()
 
-    # 失败回退：直接取前 top_k（使用融合分数）
-    return candidate_docs[:top_k], {"rerank_count": top_k, "llm_scored": False, "error": str(e)}
+    # 解析 JSON（容错处理：从 { 开始，} 结束）
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        json_text = text[start:end+1]
+        data = json.loads(json_text)
+        scores = data.get("scores", [])
+        # 建立 id -> score 映射
+        score_map = {int(s["id"]): float(s["score"]) for s in scores}
+        # 用 LLM 打分覆盖 final_score，并设置分数
+        scored = []
+        for i, d in enumerate(candidate_docs):
+            s = score_map.get(i, d.metadata.get("final_score", 0.0) * 5)
+            d.metadata["rerank_score"] = round(float(s), 2)
+            scored.append((s, d))
+        # 排序，取前 top_k
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [d for _, d in scored[:top_k]]
+        return top, {"rerank_count": len(top), "llm_scored": True}
+
+    # JSON 解析失败：回退
+    print(f"[WARN] LLM Rerank 输出无法解析为 JSON，回退到 RRF 分数")
+    return candidate_docs[:top_k], {"rerank_count": top_k, "llm_scored": False, "error": "json_parse_failed"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

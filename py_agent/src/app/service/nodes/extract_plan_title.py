@@ -3,6 +3,7 @@ Extract Plan Title节点 - 从计划文本中提取标题
 使用 LLM 准确提炼，不再靠正则猜。
 """
 from prompts.extract_plan_title import EXTRACT_TITLE_PROMPT, EXTRACT_TITLE_RETRY_PROMPT
+from src.app.common.llm_factory import extract_text
 
 
 async def extract_plan_title_node(state) -> dict:
@@ -33,7 +34,7 @@ async def extract_plan_title_node(state) -> dict:
 
         llm = get_llm(temperature=0.3)
         result = llm.bind(max_tokens=30).invoke([HumanMessage(content=prompt)])
-        raw = result.content if hasattr(result, 'content') else str(result)
+        raw = extract_text(result.content) if hasattr(result, 'content') else str(result)
         # 清理：取第一行，去除标点和空白
         raw = raw.strip().split("\n")[0]
         title = raw.strip().strip('"').strip("'").strip("：:").strip()
@@ -53,7 +54,7 @@ async def extract_plan_title_node(state) -> dict:
             retry_prompt = EXTRACT_TITLE_RETRY_PROMPT.format(plan_summary=plan_summary[:300])
             try:
                 result = llm.invoke([HumanMessage(content=retry_prompt)])
-                title = result.content.strip().split("\n")[0].strip().strip('"').strip("'").strip("：:").strip()
+                title = extract_text(result.content).strip().split("\n")[0].strip().strip('"').strip("'").strip("：:").strip()
             except Exception:
                 pass
         if not title or len(title) < 2:

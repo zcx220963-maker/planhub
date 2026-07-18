@@ -5,7 +5,8 @@ Plan Generator节点 - 计划信息收集器
 
 import re
 from prompts.plan_generator import PLAN_GENERATOR_SYSTEM_PROMPT
-from ..stream_writer import emit_token, is_streaming
+from src.app.common.llm_factory import extract_text
+from ..stream_writer import emit_token, emit_streaming_complete, flush_buffer, is_streaming
 
 MAX_COLLECT_ROUNDS = 10
 
@@ -20,31 +21,36 @@ def _is_confirm(user_input: str) -> bool:
 
 def _build_plan_summary(plan_history: list, last_response: str = "") -> str:
     """提取用户确认时的需求摘要给plan_builder
-    优先解析XML标签，fallback到前缀匹配，再fallback到拼接用户消息"""
+
+    优先级：
+    1. last_response 中的 <summary> 标签（LLM 主动总结）
+    2. 拼接对话历史中的用户消息（最可靠，用户原话）
+    3. last_response 的前缀匹配 / 截断兜底
+    """
+    # 1. 优先从 last_response 提取 <summary> 标签
     if last_response and len(last_response) > 10:
         match = re.search(r'<summary>(.*?)</summary>', last_response, re.DOTALL)
         if match:
-            return match.group(1).strip()[:500]
+            summary = match.group(1).strip()
+            if summary and len(summary) > 5:
+                return summary[:500]
 
-        for prefix in ["好的，目前了解到：", "好的，目前了解到", "目前了解到：", "已收集的信息："]:
-            if prefix in last_response:
-                idx = last_response.index(prefix) + len(prefix)
-                summary = last_response[idx:]
-                for sep in ["请问", "还需要了解", "还有什么"]:
-                    s_idx = summary.find(sep)
-                    if s_idx > 0:
-                        summary = summary[:s_idx]
-                summary = summary.strip().rstrip("，。")
-                if summary:
-                    return summary[:500]
-        return last_response[:500]
+    # 2. 从对话历史拼用户消息（用户原话，最可靠）
     parts = []
     for msg in plan_history:
         if msg.get("role") == "user":
             content = msg.get("content", "")
-            if content and len(content) > 2:
+            # 过滤掉按钮点击等控制信号
+            if content and not content.startswith("__click_") and len(content) > 2:
                 parts.append(content)
-    return "；".join(parts[-5:])[:500]
+    if parts:
+        return "；".join(parts[-5:])[:500]
+
+    # 3. 最后兜底：last_response 截断
+    if last_response and len(last_response) > 10:
+        return last_response[:500]
+
+    return ""
 
 
 async def plan_generator_node(state) -> dict:
@@ -137,48 +143,59 @@ async def plan_generator_node(state) -> dict:
                 f"这是第一轮对话，用户刚确认要制定计划。\n"
                 f"用户原始需求：{state.get('original_user_input', '')}\n"
                 f"用户确认：{user_input}\n\n"
-                f"请直接问第一个问题，不要输出<summary>标签（因为还没有任何信息可总结）。"
+                f"请直接问第一个简明问题（如目的地、天数、时间等）。\n"
+                f"如果用户的需求比较模糊（比如只说了'减肥'、'旅游'但没有具体目标），"
+                f"可以主动推荐2-3个常见方向让用户选择。\n"
+                f"注意：第一轮不要输出「已了解」汇总。"
             )))
         else:
-            messages.append(HumanMessage(content=(
-                f"{user_input}\n\n"
-                f"请先回顾上面的对话历史，在<summary>中用你自己的话写一段真实总结，"
-                f"不要写'目前了解到的信息总结'这个占位文本。"
-            )))
+            # 拼接用户已回答的信息，帮助 LLM 生成汇总
+            answered = []
+            for msg in plan_history:
+                if msg.get("role") == "user":
+                    content = msg.get("content", "").strip()
+                    if content and not content.startswith("__click_"):
+                        answered.append(content)
+            if answered:
+                context_hint = "用户已回答：" + "、".join(answered[-6:])
+                messages.append(HumanMessage(content=(
+                    f"{user_input}\n\n"
+                    f"（内部提示：{context_hint}。"
+                    f"请简短问下一个问题，并在末尾用「已了解：」列出用户已回答的关键信息，不要重复本轮之前的问题。"
+                    f"如果用户这一轮回答模糊（如'随便'、'无目标'、'长期'、'看情况'等），"
+                    f"主动推荐2-3个合理选项供参考，不要直接跳过。）"
+                )))
+            else:
+                messages.append(HumanMessage(content=user_input))
 
         llm = get_llm(temperature=0.7)
 
-        # 流式调用LLM，逐 token 推送
+        from ..stream_writer import emit_log
+        await emit_log("正在了解你的需求...")
+
+        # 流式调用LLM，逐 token 推送（LLM 直接输出干净文字，无需后处理）
         raw_chunks = []
         streaming = is_streaming()
         if streaming:
             async for chunk in llm.astream(messages):
                 content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                if content:
-                    raw_chunks.append(content)
-                    emit_token(content)
+                text = extract_text(content) if content is not None else ""
+                if text:
+                    raw_chunks.append(text)
+                    await emit_token(text)
+            await flush_buffer()
             llm_raw_response = "".join(raw_chunks).strip()
+            # LLM 流式生成结束，立即通知前端（不等待后续 post-processing）
+            await emit_streaming_complete()
         else:
             result = await llm.ainvoke(messages)
-            llm_raw_response = result.content if hasattr(result, 'content') else str(result)
+            llm_raw_response = extract_text(result.content) if hasattr(result, 'content') else str(result)
             llm_raw_response = llm_raw_response.strip()
 
         print(f"[DEBUG] plan_generator: raw_response = {llm_raw_response[:200]}")
 
-        # 清洗XML标签，只保留用户可读内容
-        def _clean_llm_response(text: str, is_first: bool) -> str:
-            q_match = re.search(r'<question>(.*?)</question>', text, re.DOTALL)
-            s_match = re.search(r'<summary>(.*?)</summary>', text, re.DOTALL)
-            parts = []
-            if s_match and not is_first:
-                summary = s_match.group(1).strip()
-                if summary and summary not in {"暂无", "无", "目前没有", "待收集", "目前了解到的信息总结"}:
-                    parts.append(summary)
-            if q_match:
-                parts.append(q_match.group(1).strip())
-            return "\n\n".join(parts) if parts else text
-
-        clean_response = _clean_llm_response(llm_raw_response, is_first_entry)
+        # LLM 直接输出干净文字，无需清洗标签
+        clean_response = llm_raw_response
 
         def _remove_guide_sentences(text: str) -> str:
             import re
@@ -218,10 +235,9 @@ async def plan_generator_node(state) -> dict:
             result = re.sub(r"\n{3,}", "\n\n", result)
             return result.strip()
 
-        clean_response = _remove_guide_sentences(clean_response)
         display_response = clean_response
 
-        # 更新对话历史（使用纯净的LLM输出，不含引导语）
+        # 更新对话历史
         new_history = list(plan_history)
         new_history.append({"role": "user", "content": user_input})
         new_history.append({"role": "assistant", "content": llm_raw_response})

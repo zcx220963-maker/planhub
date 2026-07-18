@@ -106,18 +106,100 @@ def _record_usage(ai_message, prompt_text: str, latency_ms: float):
     )
 
 
+def extract_text(content) -> str:
+    """从 LLM 响应内容中提取纯文本。
+
+    普通模型（DashScope / Ollama）返回字符串；
+    thinking 模型（LongCat-2.0）返回内容块列表（ThinkingBlock + TextBlock），
+    需要拼接 text 类型块的内容，否则下游的 chunks joining 会报 TypeError。
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            else:
+                btype = getattr(block, "type", None)
+                if btype == "text":
+                    parts.append(getattr(block, "text", "") or "")
+        return "".join(parts)
+    return str(content)
+
+
+_llm_cache: dict[str, any] = {}
+
+
 def get_llm(temperature: float = 0.7, force_ollama: bool = False):
     """
-    获取 LLM 实例。
+    获取 LLM 实例（带缓存，避免重复创建 httpx 客户端导致连接泄漏）。
 
-    优先使用阿里云百炼 ChatOpenAI（支持 Tool Calling）。
-    如果 DASHSCOPE_API_KEY 未配置或调用失败，自动降级到本地 Ollama。
+    优先级（由 LLM_TYPE 环境变量控制）：
+    - longcat: LongCat-2.0（Anthropic 兼容，结构化输出稳定，推荐）
+    - dashscope: 阿里云百炼（需 API Key）
+    - ollama: 本地 Ollama（默认降级）
 
     返回的模型对象已经被包装：每次 invoke 后会打印 Token 统计与耗时。
     """
-    # 检查是否启用阿里云百炼（支持 Tool Calling）
-    use_dashscope = settings.use_dashscope_bool and settings.DASHSCOPE_API_KEY
+    # 缓存键：模型类型 + temperature，相同配置复用同一实例
+    cache_key = f"{os.getenv('LLM_TYPE', '')}_{temperature}_{force_ollama}"
+    if cache_key in _llm_cache:
+        return _llm_cache[cache_key]
 
+    llm_type = os.getenv("LLM_TYPE", "").strip().lower()
+
+    # ── 优先：LongCat（Anthropic 兼容 API，结构化输出最稳定）────────
+    if not force_ollama and (llm_type == "longcat" or (not llm_type and settings.ANTHROPIC_AUTH_TOKEN)):
+        try:
+            from langchain_anthropic import ChatAnthropic
+            import httpx
+            import anthropic
+
+            base_llm = ChatAnthropic(
+                model=settings.ANTHROPIC_MODEL,
+                api_key=settings.ANTHROPIC_AUTH_TOKEN,
+                base_url=settings.ANTHROPIC_BASE_URL,
+                temperature=temperature,
+                max_tokens=8192,
+                # 注意：anthropic_proxy=None 在源码中是 truthy 检查，None 会被跳过，
+                # 无法绕过 Windows 系统代理（127.0.0.1:3067）。
+                # 因此这里传一个空字符串也不行（会报 Unknown scheme），
+                # 我们在创建后手动替换 _client / _async_client 来强制 trust_env=False。
+            )
+
+            # 绕过系统代理 + 使用 Authorization: Bearer 头（LongCat 不接受 x-api_key）
+            _token = settings.ANTHROPIC_AUTH_TOKEN
+            _base = settings.ANTHROPIC_BASE_URL
+            _hdrs = {"authorization": f"Bearer {_token}"}
+
+            _http_sync = httpx.Client(base_url=_base, trust_env=False, timeout=120)
+            _http_async = httpx.AsyncClient(base_url=_base, trust_env=False, timeout=120)
+
+            base_llm._client = anthropic.Client(
+                api_key=_token,
+                base_url=_base,
+                default_headers=_hdrs,
+                http_client=_http_sync,
+            )
+            base_llm._async_client = anthropic.AsyncClient(
+                api_key=_token,
+                base_url=_base,
+                default_headers=_hdrs,
+                http_client=_http_async,
+            )
+            print(f"[INFO] 使用 LongCat 模型: {settings.ANTHROPIC_MODEL}（无代理直连，Bearer <REDACTED>）")
+            wrapped = _wrap_with_token_stats(base_llm, fallback_model=None)
+            _llm_cache[cache_key] = wrapped
+            return wrapped
+        except Exception as e:
+            print(f"[WARN] LongCat 初始化失败: {e}")
+
+    # ── 次选：阿里云百炼 ─────────────────────────────────────────
+    use_dashscope = settings.use_dashscope_bool and settings.DASHSCOPE_API_KEY
     if not force_ollama and use_dashscope:
         try:
             from langchain_openai import ChatOpenAI
@@ -129,13 +211,20 @@ def get_llm(temperature: float = 0.7, force_ollama: bool = False):
                 max_tokens=8192,
             )
             print(f"[INFO] 使用阿里云百炼模型: {settings.DASHSCOPE_MODEL}")
-            return _wrap_with_token_stats(base_llm, fallback_model=_build_ollama_llm(temperature))
+            wrapped = _wrap_with_token_stats(base_llm, fallback_model=_build_ollama_llm(temperature))
+            _llm_cache[cache_key] = wrapped
+            return wrapped
         except Exception as e:
             print(f"[WARN] 阿里云百炼初始化失败: {e}，降级到 Ollama")
-            return _wrap_with_token_stats(_build_ollama_llm(temperature), fallback_model=None)
-    else:
-        print(f"[INFO] 使用本地 Ollama 模型: {settings.OLLAMA_MODEL}")
-        return _wrap_with_token_stats(_build_ollama_llm(temperature), fallback_model=None)
+            wrapped = _wrap_with_token_stats(_build_ollama_llm(temperature), fallback_model=None)
+            _llm_cache[cache_key] = wrapped
+            return wrapped
+
+    # ── 兜底：本地 Ollama ─────────────────────────────────────
+    print(f"[INFO] 使用本地 Ollama 模型: {settings.OLLAMA_MODEL}")
+    wrapped = _wrap_with_token_stats(_build_ollama_llm(temperature), fallback_model=None)
+    _llm_cache[cache_key] = wrapped
+    return wrapped
 
 
 def _build_ollama_llm(temperature: float = 0.7):

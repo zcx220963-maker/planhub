@@ -1,19 +1,18 @@
 """
-Tool Executor 节点 - 纯工具调用执行器
+Tool Executor 节点 - 通过 MCP 调用外部工具
 
 流程：
 1. 接收 parameter_extractor 输出的 ranked_tools
-2. 并行调用各个外部 API（天气、营养、运动等）
-3. 实体解析 + 失败降级
-4. 格式化输出 tool_data_parts
+2. 通过 MCP client 并行调用（工具名/参数名与 MCP schema 完全一致）
+3. 格式化输出 tool_data_parts
 
 注意：这是一个纯执行节点，不做任何 LLM 判断。
-所有外部 API 均为免费公开接口，无需 API Key。
+所有工具通过 MCP server 统一提供，新增工具无需修改本文件。
 """
 
 
 async def tool_executor_node(state) -> dict:
-    """Tool Executor 节点：并行调用 ranked_tools 中的外部 API"""
+    """Tool Executor 节点：通过 MCP 并行调用 ranked_tools"""
     import asyncio
 
     ranked_tools = state.get("ranked_tools", [])
@@ -36,48 +35,144 @@ async def tool_executor_node(state) -> dict:
             ]
         }
 
-    tasks = []
-    for tool_info in ranked_tools:
-        tasks.append(_call_single_tool(tool_info))
+    # 通过 MCP client 直接调用（工具名/参数名与 schema 完全一致）
+    from src.app.mcp.mcp_client import get_mcp_adapter
+    from ..stream_writer import emit_log
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    mcp_adapter = await get_mcp_adapter()
+
+    tool_names = [t.get("tool") for t in ranked_tools]
+    await emit_log(f"开始调用 {len(ranked_tools)} 个工具：{', '.join(tool_names)}")
+
+    # 创建任务列表，每个任务的结果包含 tool_info
+    async def _call_with_info(tool_info: dict):
+        """调用工具并附带 tool_info，以便 as_completed 后识别"""
+        result = await _call_mcp_tool(mcp_adapter, tool_info)
+        return (tool_info, result)
+
+    task_list = []
+    for tool_info in ranked_tools:
+        tool_name = tool_info.get("tool", "")
+        print(f"[DEBUG] tool_executor: 准备调用 {tool_name} params={tool_info.get('params', {})}")
+        task = asyncio.create_task(_call_with_info(tool_info))
+        task_list.append(task)
 
     tool_call_results = []
     tool_data_parts = []
     tool_fail_log = []
     success_count = 0
+    failed_tool_infos = []  # 保存「参数类」失败工具供 ReAct 重试
+    permanent_fail_log = []  # 非参数类失败（网络/超时等）直接记录不重试
 
-    for i, result in enumerate(results):
-        tool_info = ranked_tools[i]
-        tool_name = tool_info.get("tool", "unknown")
+    # 判断错误是否属于"参数模糊/未找到"类（适合 ReAct 推理）
+    _PARAM_ERROR_KEYWORDS = ["未找到", "缺少", "参数", "无效", "模糊", "不存在", "give_up", "empty", "not found", "missing", "invalid"]
 
-        if isinstance(result, Exception):
-            tool_fail_log.append({
-                "tool": tool_name,
-                "error": str(result)
-            })
+    def _is_param_error(error_msg: str) -> bool:
+        if not error_msg:
+            return False
+        msg = error_msg.lower()
+        return any(kw in msg for kw in _PARAM_ERROR_KEYWORDS)
+
+    # 使用 as_completed 实现每个工具完成时实时输出日志
+    for coro in asyncio.as_completed(task_list):
+        try:
+            tool_info, result = await coro
+        except Exception as e:
+            # 这种场景理论上不会发生（内部已捕获），兜底处理
+            error_msg = str(e)
+            tool_fail_log.append({"tool": "unknown", "error": error_msg})
+            await emit_log(f"✗ 未知工具异常：{error_msg}")
             continue
 
+        tool_name = tool_info.get("tool", "unknown")
+
         if result.get("success"):
+            data = result.get("data", {})
+            # 检测"假成功"：数据为空、包含 error 字段、或空列表
+            data_str = str(data)
+            is_fake_success = (
+                not data or
+                data == {} or
+                (isinstance(data, dict) and "error" in data) or
+                (isinstance(data, dict) and "books" in data and not data["books"]) or
+                (isinstance(data, dict) and "meals" in data and not data["meals"]) or
+                (isinstance(data, dict) and "articles" in data and not data["articles"])
+            )
+
+            if is_fake_success:
+                # 假成功 → 当作失败处理，走 ReAct 重试
+                error_msg = data.get("error", "返回空数据") if isinstance(data, dict) else "返回空数据"
+                tool_fail_log.append({
+                    "tool": tool_name,
+                    "error": error_msg
+                })
+                await emit_log(f"✗ {tool_name} 返回空数据：{error_msg}")
+                failed_tool_infos.append(tool_info)
+                continue
+
             success_count += 1
             tool_call_results.append({
                 "tool": tool_name,
-                "data": result.get("data", {})
+                "data": data
             })
-            formatted = _format_tool_result(tool_name, result.get("data", {}))
+            formatted = _format_tool_result(tool_name, data)
             if formatted:
                 tool_data_parts.append(formatted)
+            # 实时流式显示每个工具的返回数据
+            await emit_log(f"✓ {tool_name} 返回数据：{data_str}")
         else:
+            error_msg = result.get("error", "未知错误")
             tool_fail_log.append({
                 "tool": tool_name,
-                "error": result.get("error", "未知错误")
+                "error": error_msg
             })
+            await emit_log(f"✗ {tool_name} 失败：{error_msg}")
+            # 只有参数模糊/未找到类错误才走 ReAct
+            if _is_param_error(error_msg):
+                failed_tool_infos.append(tool_info)
+            else:
+                permanent_fail_log.append({"tool": tool_info, "error": error_msg})
+
+    # ── ReAct 自主重试：只对"参数模糊/未找到"类错误做推理重试 ──
+    if failed_tool_infos:
+        plan_summary = state.get("plan_summary", "")
+        if plan_summary:
+            await emit_log(f"有 {len(failed_tool_infos)} 个工具参数需要推理补全...")
+
+            for tool_info in failed_tool_infos:
+                tool_name = tool_info.get("tool", "")
+                await emit_log(f"◇ {tool_name} 调用失败，LLM 正在推理正确参数...")
+                print(f"[DEBUG] tool_executor: ReAct 重试 {tool_name}")
+                retry_result = await _react_retry_single_tool(
+                    mcp_adapter, tool_info, plan_summary, emit_log
+                )
+
+                if retry_result.get("success"):
+                    # 从失败日志移到成功
+                    retry_data = retry_result.get("data", {})
+                    tool_fail_log = [f for f in tool_fail_log if f["tool"] != tool_name]
+                    success_count += 1
+                    tool_call_results.append({
+                        "tool": tool_name,
+                        "data": retry_data
+                    })
+                    formatted = _format_tool_result(tool_name, retry_data)
+                    if formatted:
+                        tool_data_parts.append(formatted)
+                    # 返回数据显示在日志中
+                    retry_data_str = str(retry_data)
+                    await emit_log(f"✓ {tool_name} 补全参数后返回数据：{retry_data_str}")
+                    print(f"[DEBUG] tool_executor: ReAct 成功 {tool_name}")
+                else:
+                    await emit_log(f"✗ {tool_name} 智能补全后仍失败: {retry_result.get('error')}")
 
     print(f"[DEBUG] tool_executor: 成功 {success_count}/{len(ranked_tools)} 个工具调用")
     if tool_call_results:
         print(f"[DEBUG] tool_executor: 成功工具: {[r['tool'] for r in tool_call_results]}")
     if tool_fail_log:
         print(f"[DEBUG] tool_executor: 失败工具: {[(f['tool'], f['error']) for f in tool_fail_log]}")
+
+    await emit_log(f"工具调用完成：成功 {success_count}/{len(ranked_tools)} 个")
 
     return {
         "tool_call_results": tool_call_results,
@@ -97,6 +192,180 @@ async def tool_executor_node(state) -> dict:
             }
         ]
     }
+
+
+async def _call_mcp_tool(mcp_adapter, tool_info: dict) -> dict:
+    """通过 MCP 调用单个工具（工具名/参数名与 MCP schema 完全一致）
+
+    不再硬编码参数转换，LLM 按 MCP schema 提取的参数直接传给 MCP server。
+    """
+    tool_name = tool_info.get("tool", "")
+    params = tool_info.get("params", {})
+
+    # 必填参数校验
+    required = tool_info.get("required_slots", [])
+    if required:
+        has_value = any(params.get(slot) for slot in required)
+        if not has_value:
+            return {"success": False, "error": "缺少必填参数"}
+
+    try:
+        return await mcp_adapter.call_tool(tool_name, params)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ─── ReAct 智能参数补全 ─────────────────────────────────────────
+
+_REACT_SYSTEM_PROMPT = """你是一个智能工具参数推理器。
+
+当工具调用失败时，你需要根据用户需求自主推断正确的参数值重新调用。
+
+## 规则
+1. 分析失败原因：参数模糊/太宽泛/格式不对/缺少必填参数
+2. 根据用户需求（plan_summary）推断**符合工具参数槽位要求**的具体值
+3. 工具需要什么参数就填什么参数，值要具体、可在该工具中搜索到
+4. 如果第一次推理的值不对，下一次尝试换一个更通用或更具体的值
+5. 直接输出 JSON 格式的新参数，不要解释
+6. 如果无法推断，输出 {"give_up": true}
+
+## 输出格式
+{"param_name": "具体值"}
+
+## 示例 1：营养查询工具
+用户需求：高蛋白低碳水饮食计划
+工具 get_food_nutrition（参数槽位：food=食物名称）失败原因：未找到食物 "高蛋白低碳水"
+→ 分析：用户要的是高蛋白低碳水食物，API 需要具体的食物名
+→ 推理：高蛋白低碳水的常见食物有：鸡胸肉、鸡蛋、三文鱼、豆腐、牛肉
+→ {"food": "鸡胸肉"}
+
+## 示例 2：运动查询工具
+用户需求：减肥，每周运动三次
+工具 get_wger_exercises（参数槽位：query=运动关键词）失败原因：未找到运动 "减肥"
+→ 分析：减肥是目的不是运动名，API 需要具体的运动类型
+→ 推理：减肥常见运动有：跑步、游泳、有氧运动、cardio
+→ {"query": "cardio"}
+
+## 示例 3：搜索类工具
+用户需求：高蛋白低碳水饮食减肥
+工具 search_books（参数槽位：query=搜索关键词）返回空结果
+→ 分析：可能是关键词太宽泛或太具体
+→ 推理：换一个更常见的搜索词，英文搜索效果更好
+→ {"query": "weight loss diet"}
+
+## 重要提醒
+- 搜索类工具（search_books、search_papers、get_wikipedia 等）用**英文关键词**效果更好
+- 工具要什么参数就填什么参数名，不要自己发明参数名
+- 每次推理换不同的具体值，不要重复上次失败的
+- 如果连续 2 次失败，输出 {"give_up": true} 放弃
+"""
+
+
+async def _react_retry_single_tool(
+    mcp_adapter,
+    tool_info: dict,
+    plan_summary: str,
+    emit_log=None
+) -> dict:
+    """ReAct 单次重试：工具失败后，LLM 推理新参数只重试一次
+
+    Returns:
+        {"tool": str, "success": bool, "data": dict|None, "error": str|None}
+    """
+    import json
+    from app.common.llm_factory import get_llm
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from src.app.common.llm_factory import extract_text
+
+    tool_name = tool_info.get("tool", "")
+    original_params = tool_info.get("params", {})
+    required_slots = tool_info.get("required_slots", [])
+    optional_slots = tool_info.get("optional_slots", [])
+    all_slots = required_slots + optional_slots
+
+    current_params = dict(original_params)
+    last_error = ""
+
+    llm = get_llm(temperature=0.3)
+
+    async def _log(msg: str):
+        """同时输出到后端日志和前端的执行日志面板"""
+        print(f"[DEBUG] ReAct: {msg}")
+        if emit_log:
+            await emit_log(msg)
+
+    # ── Reasoning: LLM 推理新参数 ──
+    slots_desc = []
+    for s in all_slots:
+        req_mark = "（必填）" if s in required_slots else ""
+        current_val = current_params.get(s, "（未设置）")
+        slots_desc.append(f"  - {s}{req_mark}: 当前值={current_val}")
+    slots_text = "\n".join(slots_desc)
+
+    prompt = f"""用户需求：{plan_summary}
+
+工具名：{tool_name}
+参数槽位：
+{slots_text}
+
+上次调用参数：{json.dumps(current_params, ensure_ascii=False)}
+失败原因：返回空数据或未找到
+
+请推断正确的参数值。只输出 JSON，如 {{"query": "weight loss"}}"""
+
+    await _log(f"  → LLM 推理新参数...")
+
+    try:
+        resp = await llm.ainvoke([
+            SystemMessage(content=_REACT_SYSTEM_PROMPT),
+            HumanMessage(content=prompt)
+        ])
+        raw = extract_text(resp.content) if hasattr(resp, "content") else str(resp)
+        print(f"[DEBUG] ReAct: {tool_name} LLM 推理输出: {raw[:200]}")
+
+        text = raw.strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            new_params = json.loads(text[start:end + 1])
+            if new_params.get("give_up"):
+                await _log(f"  → LLM 放弃推断")
+                return {"tool": tool_name, "success": False, "data": None, "error": "LLM 放弃推断"}
+            filtered = {k: v for k, v in new_params.items() if k in all_slots}
+            if filtered:
+                reasoned_str = ", ".join(f"{k}={v}" for k, v in filtered.items())
+                await _log(f"  → 推理出：{reasoned_str}")
+                current_params.update(filtered)
+            else:
+                await _log(f"  → 参数槽位无效，不再重试")
+                return {"tool": tool_name, "success": False, "data": None, "error": "参数无效"}
+        else:
+            await _log(f"  → 未输出有效 JSON，不再重试")
+            return {"tool": tool_name, "success": False, "data": None, "error": "推理失败"}
+    except Exception as e:
+        await _log(f"  → 推理异常: {e}")
+        return {"tool": tool_name, "success": False, "data": None, "error": str(e)}
+
+    # ── Act: 用新参数调用一次 ──
+    if required_slots:
+        has_value = any(current_params.get(s) for s in required_slots)
+        if not has_value:
+            current_params[required_slots[0]] = ""
+
+    await _log(f"  → 重试调用：{json.dumps(current_params, ensure_ascii=False)}")
+
+    try:
+        result = await mcp_adapter.call_tool(tool_name, current_params)
+    except Exception as e:
+        result = {"success": False, "error": str(e)}
+
+    if result.get("success"):
+        await _log(f"  ✓ 重试成功！")
+        return {"tool": tool_name, "success": True, "data": result.get("data", {}), "error": None}
+
+    last_error = result.get("error", "未知错误")
+    await _log(f"  ✗ 重试仍失败：{last_error}")
+    return {"tool": tool_name, "success": False, "data": None, "error": last_error}
 
 
 async def _call_single_tool(tool_info: dict) -> dict:
@@ -230,10 +499,35 @@ async def _call_single_tool(tool_info: dict) -> dict:
         elif tool_name == "get_advice_slip":
             return await _call_advice_slip(params)
         else:
-            return {"success": False, "error": f"未知工具: {tool_name}"}
+            # 未硬编码的工具 → 尝试通过 MCP 动态调用
+            return await _call_via_mcp(tool_name, params)
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+async def _call_via_mcp(tool_name: str, params: dict) -> dict:
+    """
+    通过 MCP 动态调用工具（兜底机制）
+
+    当工具名不在硬编码列表中时，尝试从 MCP server 查找并调用。
+    这样新增 MCP tool 无需修改 tool_executor.py。
+    """
+    try:
+        from src.app.mcp.mcp_client import get_mcp_adapter
+        adapter = await get_mcp_adapter()
+
+        if not adapter.is_connected:
+            return {"success": False, "error": f"未知工具: {tool_name}（MCP 未连接）"}
+
+        if tool_name not in adapter.tool_names:
+            return {"success": False, "error": f"未知工具: {tool_name}"}
+
+        print(f"[DEBUG] tool_executor: 通过 MCP 调用 {tool_name}")
+        result = await adapter.call_tool(tool_name, params)
+        return result
+    except Exception as e:
+        return {"success": False, "error": f"MCP 调用失败: {str(e)}"}
 
 
 # ─── 天气类 ──────────────────────────────────────────────────────
@@ -375,7 +669,8 @@ async def _call_food_nutrition(params: dict) -> dict:
     """调用 Open Food Facts API（免费，无需 API Key）"""
     import requests
 
-    query = params.get("query", "")
+    # MCP schema 用 food，旧代码用 query，兼容两种
+    query = params.get("food") or params.get("query") or ""
     if not query:
         return {"success": False, "error": "缺少食物名称"}
 
@@ -410,7 +705,8 @@ async def _call_wger_exercises(params: dict) -> dict:
     """调用 wger 运动 API（免费，无需 API Key）"""
     import requests
 
-    query = params.get("query", "")
+    # MCP schema 用 muscle/category，旧代码用 query，兼容两种
+    query = params.get("query") or params.get("muscle") or params.get("category") or ""
     if not query:
         return {"success": False, "error": "缺少运动名称"}
 
@@ -470,11 +766,25 @@ async def _call_open_library(params: dict) -> dict:
 
 # ─── 健康计算类 ──────────────────────────────────────────────────
 
+def _extract_number(value) -> float:
+    """从带单位的字符串中提取数值，如 '179cm' -> 179, '80kg' -> 80"""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not value:
+        return 0
+    import re
+    m = re.search(r"[\d.]+", str(value))
+    return float(m.group()) if m else 0
+
+
 async def _call_bmi(params: dict) -> dict:
     """计算 BMI（纯计算，无需外部 API）"""
     try:
-        height_cm = float(params.get("height_cm", 0))
-        weight_kg = float(params.get("weight_kg", 0))
+        # 兼容两种参数名：MCP schema 用 weight/height，旧代码用 weight_kg/height_cm
+        raw_height = params.get("height_cm") or params.get("height") or 0
+        raw_weight = params.get("weight_kg") or params.get("weight") or 0
+        height_cm = _extract_number(raw_height)
+        weight_kg = _extract_number(raw_weight)
         if not height_cm or not weight_kg:
             return {"success": False, "error": "缺少身高或体重"}
 

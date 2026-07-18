@@ -67,6 +67,7 @@ class AgentState(TypedDict):
     plan_conversation_history: List[Dict[str, Any]]  # 计划对话历史（用于多轮问答）
     needs_plan_building: bool            # 是否需要执行plan_builder（plan_generator确认后标记）
     plan_generated: bool                 # 计划是否已生成（plan_builder完成后标记）
+    plan_flow_cancelled: bool            # 用户取消/拒绝计划创建后标记，supervisor 据此跳过旧 execution_trace 推断
     plan_summary: Optional[str]          # 需求摘要（plan_generator输出，plan_builder消费）
 
     # ===== 三阶段计划生成 =====
@@ -80,6 +81,8 @@ class AgentState(TypedDict):
 
     # ===== 前端展示数据 =====
     plan_metadata: Optional[Dict[str, Any]]  # 结构化元数据（工具调用、计划摘要等），供前端展示
+    preview_url: Optional[str]               # 后端生成的 HTML 预览页面 URL（plan_writer 输出）
+    plan_id: Optional[int]                   # 持久化到计划库后的 ID（plan_writer 输出）
 
     # ===== 文档知识检索 =====
     doc_data_parts: List[str]              # doc_retriever 输出：知识库检索结果片段

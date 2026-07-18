@@ -17,6 +17,29 @@ PlanHub AI 服务 - 应用入口
 import sys
 import os
 import io
+import logging
+
+# ── 崩溃日志：记录所有未捕获异常到文件 ────────────────────────
+# 这样服务器崩溃时可以查看 crash.log 找到真正原因
+logging.basicConfig(
+    filename="crash.log",
+    level=logging.ERROR,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+crash_logger = logging.getLogger("crash")
+
+
+def _global_excepthook(exc_type, exc_value, exc_tb):
+    """记录未捕获的异常（包括 CancelledError 在 Python 3.9+ 是 BaseException）"""
+    import traceback
+    msg = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    crash_logger.error(f"未捕获的全局异常:\n{msg}")
+    # 同时打印到 stderr
+    print(f"[CRASH] {msg}", file=sys.stderr, flush=True)
+
+
+sys.excepthook = _global_excepthook
+
 
 # ── Windows 控制台编码修复 ──────────────────────────────────
 # Windows 默认控制台编码为 GBK，遇到 AI 回复中的 emoji (👋🌟) 时
@@ -31,6 +54,30 @@ if sys.platform == "win32":
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+# ── Windows 控制台关闭信号防护 ──────────────────────────────
+# 用户误点终端窗口"×"或 VS Code 终端垃圾桶时，Windows 会向子进程发送
+# CTRL_CLOSE_EVENT，Python 默认行为是退出（退出码 0）。
+# 安装一个自定义处理器忽略该信号，让服务器在终端关闭后仍继续运行。
+# 用户仍需按 Ctrl+C 或用 taskkill 来真正停服。
+if sys.platform == "win32":
+    import ctypes
+    _CTRL_CLOSE_EVENT = 2
+    _CTRL_LOGOFF_EVENT = 5
+    _CTRL_SHUTDOWN_EVENT = 6
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_ulong)
+    def _ignore_console_close(ctrl_type):
+        if ctrl_type in (_CTRL_CLOSE_EVENT, _CTRL_LOGOFF_EVENT, _CTRL_SHUTDOWN_EVENT):
+            # 返回 True 表示"已处理"，系统不会再终止进程
+            print(f"[INFO] 收到控制台关闭信号({ctrl_type})，服务器继续运行", flush=True)
+            return True
+        # CTRL_C_EVENT / CTRL_BREAK_EVENT = 返回 False → 走默认行为（允许 Ctrl+C 退出）
+        return False
+
+    _kernel32 = ctypes.windll.kernel32
+    if not _kernel32.SetConsoleCtrlHandler(_ignore_console_close, True):
+        print("[WARN] 无法安装控制台关闭信号处理器", flush=True)
+
 # 将项目根目录和 src 目录添加到 Python 路径
 # 这样 config.py 在根目录，app 在 src/ 目录
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +85,7 @@ src_path = os.path.join(project_root, "src")
 sys.path.insert(0, project_root)
 sys.path.insert(0, src_path)
 
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -48,22 +96,127 @@ from src.app.dao.redis_dao import init_redis, get_redis_client
 from src.app.api.rag import router as rag_router
 from src.app.api.conversations import router as conversation_router
 from src.app.api.orchestrator import router as orchestrator_router  # LangGraph 统一入口
+from src.app.api.plans import router as plans_router  # 计划库管理
 
 # 性能监控中间件和服务（已删除 middleware/ 和 metrics_service.py，注释掉）
 # from src.app.middleware.metrics_middleware import MetricsMiddleware
 # from src.app.service.metrics_service import MetricsService
 
+# ─── Lifespan 事件处理器（FastAPI 0.100+ 推荐方式）────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动时初始化所有服务"""
+    # 1. Redis
+    if settings.use_redis_bool:
+        init_redis()
+        print("[INFO] Redis 初始化完成")
+
+    # 2. RAG 索引
+    try:
+        from src.app.api.rag import init_document_indices, init_vector_store
+        init_vector_store()
+        init_document_indices()
+        print("[INFO] RAG 索引初始化完成")
+    except Exception as e:
+        print(f"[WARN] RAG 初始化失败: {e}")
+
+    # 3. 降级服务
+    try:
+        from src.app.service.fallback_service import FallbackService
+        from src.app.dao.redis_dao import get_redis_client
+        redis_client = get_redis_client()
+        fallback_service = FallbackService(redis_client)
+        fallback_service.load_state()
+        print("[INFO] 降级服务初始化完成")
+    except Exception as e:
+        print(f"[WARN] 降级服务初始化失败: {e}")
+
+    # 4. 本地 SQLite + 通知系统
+    try:
+        from src.app.service.plan_store import init_db
+        init_db()
+        from src.app.service.notifier import init_notifications
+        init_notifications()
+        print("[INFO] 数据库和通知系统初始化完成")
+    except Exception as e:
+        print(f"[WARN] 数据库/通知初始化失败: {e}")
+
+    # 5. MCP 工具适配器
+    try:
+        from src.app.mcp.mcp_client import get_mcp_adapter
+        mcp_adapter = await get_mcp_adapter()
+        if mcp_adapter.is_connected:
+            print(f"[INFO] MCP 工具适配器初始化完成，已加载 {len(mcp_adapter.tool_names)} 个工具")
+        else:
+            print("[WARN] MCP 工具适配器连接失败（非关键，agent 仍可使用内置工具）")
+    except Exception as e:
+        print(f"[WARN] MCP 初始化失败（非关键）: {e}")
+
+    # 6. 清理过期的计划预览文件
+    try:
+        from src.app.service.plan_html_generator import cleanup_old_previews
+        cleanup_old_previews(max_age_hours=24)
+        print("[INFO] 计划预览文件清理完成")
+    except Exception as e:
+        print(f"[WARN] 预览文件清理失败: {e}")
+
+    print("[INFO] PlanHub AI 服务启动完成")
+
+    # 启动后台任务：定期清理过期预览文件
+    cleanup_task = None
+    try:
+        from src.app.service.plan_html_generator import cleanup_old_previews
+        import asyncio
+
+        async def _periodic_cleanup():
+            while True:
+                await asyncio.sleep(3600)  # 每小时检查一次
+                try:
+                    cleanup_old_previews(max_age_hours=24)
+                except Exception:
+                    pass
+
+        cleanup_task = asyncio.create_task(_periodic_cleanup())
+        print("[INFO] 预览文件定时清理任务已启动")
+    except Exception as e:
+        print(f"[WARN] 定时清理任务启动失败: {e}")
+
+    yield  # 应用运行中...
+
+    # 取消定时清理任务
+    if cleanup_task:
+        cleanup_task.cancel()
+
+    # 关闭时的清理（可选）
+    print("[INFO] PlanHub AI 服务关闭")
+
+
 # 创建 FastAPI 应用（类似 Spring Boot 的 @SpringBootApplication）
 app = FastAPI(
     title="PlanHub AI 服务（内部）",
     description="PlanHub 的 AI 内部服务，仅接受 Java 后端的转发请求",
-    version="1.1.0"
+    version="1.1.0",
+    lifespan=lifespan,
 )
 
-# 添加 CORS 中间件（只允许来自 Java 后端的请求，Java 通常在 8080 端口）
+# 添加 CORS 中间件
+# 独立模式（无 Java 后端）：允前端 Vite 开发服务器 (5173) 和本机 Web 直接访问
+# 安全说明：服务只监听 127.0.0.1，外部无法直连，CORS 放开不影响安全
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5175",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+if settings.ALLOWED_ORIGINS_EXTRA:
+    ALLOWED_ORIGINS.extend(settings.ALLOWED_ORIGINS_EXTRA)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://127.0.0.1:8080"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,81 +239,59 @@ metrics_service = None
 
 
 # ─── 内部鉴权中间件 ─────────────────────────────────────────────
-# 每个请求必须携带正确的 X-Internal-Api-Secret Header
-# 这是防止外部直接访问 Python 服务的关键防线
-@app.middleware("http")
-async def internal_auth_middleware(request: Request, call_next):
-    """内部 API 鉴权中间件
-    
-    所有请求必须携带正确的 X-Internal-Api-Secret Header
-    只有 Java 后端知道这个密钥，因此可以确保请求来自可信来源
-    """
-    # 放行健康检查和根路径（便于调试，但仍建议在生产中限制
-    path = request.url.path
-    if path in ["/", "/health"]:
+# 默认启用：要求请求携带 X-Internal-Api-Secret Header（供 Java 后端调用）
+# 独立模式（STANDALONE_MODE=true）：关闭鉴权，前端可直接访问（服务仅监听 127.0.0.1，安全可控）
+if not settings.standalone_mode_bool:
+    @app.middleware("http")
+    async def internal_auth_middleware(request: Request, call_next):
+        """内部 API 鉴权中间件
+
+        所有请求必须携带正确的 X-Internal-Api-Secret Header
+        只有 Java 后端知道这个密钥，因此可以确保请求来自可信来源
+        """
+        # 放行健康检查和根路径（便于调试，但仍建议在生产中限制
+        path = request.url.path
+        if path in ["/", "/health"]:
+            return await call_next(request)
+
+        # 验证内部密钥
+        provided_secret = request.headers.get(settings.AI_INTERNAL_SECRET_HEADER)
+
+        if not provided_secret:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Missing internal API secret header"}
+            )
+
+        if provided_secret != settings.AI_INTERNAL_SECRET:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Invalid internal API secret"}
+            )
+
         return await call_next(request)
-    
-    # 验证内部密钥
-    provided_secret = request.headers.get(settings.AI_INTERNAL_SECRET_HEADER)
-    
-    if not provided_secret:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Missing internal API secret header"}
-        )
-    
-    if provided_secret != settings.AI_INTERNAL_SECRET:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Invalid internal API secret"}
-        )
-    
-    return await call_next(request)
+else:
+    print("[INFO] 独立模式：内部鉴权中间件已关闭，前端可直接访问")
 
 
 # 注册路由（类似 @RequestMapping）
 app.include_router(rag_router)
 app.include_router(conversation_router)
 app.include_router(orchestrator_router)  # LangGraph 统一入口
+app.include_router(plans_router)  # 计划库管理
 
 
 # 应用启动时的初始化（类似 @PostConstruct 或 ApplicationRunner）
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时初始化"""
-    if settings.use_redis_bool:
-        init_redis()
-        print("[INFO] Redis 初始化完成")
-
-    # 从 original_docs 磁盘目录重建 RAG 文档索引（BM25 + 内存索引）
-    try:
-        from src.app.api.rag import init_document_indices, init_vector_store
-        init_vector_store()
-        init_document_indices()
-        print("[INFO] RAG 索引初始化完成")
-    except Exception as e:
-        print(f"[WARN] RAG 初始化失败: {e}")
-
-    # 初始化降级服务
-    try:
-        from src.app.service.fallback_service import FallbackService
-        from src.app.dao.redis_dao import get_redis_client
-        redis_client = get_redis_client()
-        fallback_service = FallbackService(redis_client)
-        fallback_service.load_state()  # 同步调用
-        print("[INFO] 降级服务初始化完成")
-    except Exception as e:
-        print(f"[WARN] 降级服务初始化失败: {e}")
-
-    print("[INFO] PlanHub AI 服务启动完成")
+# 注意：旧的 @app.on_event("startup") 已迁移到上方 lifespan 函数
 
 
 @app.get("/")
 async def root():
+    mode = "独立模式（前端直连）" if settings.standalone_mode_bool else "内部模式（仅 Java 后端）"
     return {
-        "message": "PlanHub AI 内部服务已启动",
+        "message": "PlanHub AI 服务已启动",
         "version": "1.1.0",
-        "security_note": "此服务仅接受 Java 后端的内部请求，外部直接访问将被拒绝",
+        "mode": mode,
         "endpoints": {
             "rag": "/rag",
             "conversations": "/conversations",
@@ -172,6 +303,43 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "service": "planhub-ai-internal"}
+
+
+@app.get("/mcp/tools")
+async def list_mcp_tools():
+    """列出所有可用的 MCP 工具（供调试/前端展示）"""
+    try:
+        from src.app.mcp.mcp_client import get_mcp_adapter
+        adapter = await get_mcp_adapter()
+        if not adapter.is_connected:
+            return {"connected": False, "tools": [], "error": "MCP 未连接"}
+
+        tools = adapter.get_tools_schema()
+        return {
+            "connected": True,
+            "count": len(tools),
+            "tools": [
+                {
+                    "name": t["function"]["name"],
+                    "description": t["function"]["description"],
+                    "parameters": t["function"]["parameters"],
+                }
+                for t in tools
+            ]
+        }
+    except Exception as e:
+        return {"connected": False, "tools": [], "error": str(e)}
+
+
+@app.post("/mcp/call/{tool_name}")
+async def call_mcp_tool_endpoint(tool_name: str, params: dict):
+    """直接调用一个 MCP 工具（调试用）"""
+    try:
+        from src.app.mcp.mcp_client import call_mcp_tool
+        result = await call_mcp_tool(tool_name, params)
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 # ─── 性能指标接口 ─────────────────────────────────────────────
@@ -246,12 +414,23 @@ async def get_error_requests(hours: int = 24):
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"[INFO] PlanHub AI 内部服务启动于 http://{settings.HOST}:{settings.PORT}")
+    print(f"[INFO] PlanHub AI 服务启动于 http://{settings.HOST}:{settings.PORT}")
     print(f"[INFO] 此服务只监听 127.0.0.1，不直接暴露给外部")
-    print(f"[INFO] 所有请求必须携带 Header: {settings.AI_INTERNAL_SECRET_HEADER}: <内部密钥>")
+    if settings.standalone_mode_bool:
+        print("[INFO] 独立模式：前端可直接访问（鉴权已关闭）")
+    else:
+        print(f"[INFO] 内部模式：所有请求必须携带 Header: {settings.AI_INTERNAL_SECRET_HEADER}: <内部密钥>")
+
+    # reload=True 在 Windows 上会导致崩溃：
+    # 1. __pycache__ 更新触发文件变更事件
+    # 2. uvicorn 误杀进程重启
+    # 3. 请求处理中被中断 → 服务器挂起
+    # 开发时如需热重载，命令行加 --reload：python main.py --reload
+    enable_reload = "--reload" in sys.argv
+
     uvicorn.run(
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=True  # 开发模式自动重载
+        reload=enable_reload
     )

@@ -85,7 +85,11 @@ def extract_plan_dates_and_hours(plan_text: str) -> dict:
 
 
 async def create_plan_to_platform_node(state) -> dict:
-    """Create Plan To Platform节点：调用 create_plan 工具创建计划"""
+    """Create Plan To Platform节点：将已有的计划同步到平台
+
+    注意：plan_html_writer 已经保存了计划（含 HTML），这里不再重复创建，
+    只做时间信息补充和推送通知。
+    """
 
     print(f"[DEBUG] create_plan_to_platform: entering node")
 
@@ -93,6 +97,7 @@ async def create_plan_to_platform_node(state) -> dict:
     plan_text = state.get("plan_text_cache", "")
     plan_type = state.get("plan_type", "learning")
     plan_info = state.get("plan_info", {}) or {}
+    existing_plan_id = state.get("plan_id")  # plan_html_writer 已有的 plan_id
 
     import re
     if "是否要将此计划创建" in plan_text or "计划已生成" in plan_text or "计划已修改" in plan_text or "__DATA_SOURCES__" in plan_text:
@@ -102,7 +107,7 @@ async def create_plan_to_platform_node(state) -> dict:
         plan_text = plan_text.strip()
         print(f"[DEBUG] create_plan_to_platform: cleaned plan_text, new length={len(plan_text)}")
 
-    print(f"[DEBUG] create_plan_to_platform: plan_title={plan_title}, plan_text length={len(plan_text)}, plan_type={plan_type}, plan_info={plan_info}")
+    print(f"[DEBUG] create_plan_to_platform: plan_title={plan_title}, plan_id={existing_plan_id}, plan_text length={len(plan_text)}")
 
     # 确保标题和文本存在
     if not plan_title:
@@ -114,7 +119,7 @@ async def create_plan_to_platform_node(state) -> dict:
         "target_date": None,
         "estimated_duration_hours": None
     }
-    
+
     duration = plan_info.get("duration") or plan_info.get("days")
     if duration:
         try:
@@ -129,89 +134,80 @@ async def create_plan_to_platform_node(state) -> dict:
                 print(f"[DEBUG] create_plan_to_platform: calculated from plan_info duration={duration}, days={total_days}")
         except Exception as e:
             print(f"[WARN] create_plan_to_platform: parse duration failed: {e}")
-    
+
     # 如果 plan_info 里没拿到，再尝试从计划文本中解析（fallback）
     if not date_info["start_date"]:
         date_info = extract_plan_dates_and_hours(plan_text)
-    
+
     print(f"[DEBUG] create_plan_to_platform: date_info = {date_info}")
 
-    # 提取描述（从计划文本中提取）
-    description = plan_text
+    # 如果有已有的 plan_id，用 update_plan 补充时间信息（不重复创建）
+    if existing_plan_id:
+        try:
+            from ..plan_store import update_plan
+            update_fields = {}
+            if date_info["start_date"]:
+                update_fields["start_date"] = date_info["start_date"]
+            if date_info["target_date"]:
+                update_fields["target_date"] = date_info["target_date"]
+            if update_fields:
+                update_plan(existing_plan_id, **update_fields)
+                print(f"[DEBUG] create_plan_to_platform: 更新已有计划 id={existing_plan_id}, fields={update_fields}")
+        except Exception as e:
+            print(f"[WARN] create_plan_to_platform: 更新计划时间信息失败: {e}")
 
-    # 延迟导入，避免模块加载时的路径问题
-    def create_plan(
-        title: str,
-        description: str = "",
-        start_date: str = None,
-        target_date: str = None
-    ) -> str:
-        """直接调用 langchain_tools 中的 create_plan"""
-        # 在函数内部导入，避免模块加载时的路径问题
-        from app.common.langchain_tools import create_plan as _create_plan
-
-        # _create_plan 是 StructuredTool 对象，需要使用 .invoke() 调用
-        invoke_args = {"title": title, "description": description}
-        if start_date:
-            invoke_args["start_date"] = start_date
-        if target_date:
-            invoke_args["target_date"] = target_date
-
-        if hasattr(_create_plan, 'invoke'):
-            return _create_plan.invoke(invoke_args)
-        else:
-            # 备用：如果是普通函数，直接调用
-            return _create_plan(**invoke_args)
-
-    # 调用已实现的 create_plan 工具
+    # 推送到飞书/邮箱通知
+    notif_title = f"新计划《{plan_title}》已创建"
+    notif_content = (
+        f"描述：{plan_text[:100] if plan_text else '无'}\n"
+        f"开始日期：{date_info.get('start_date') or '未设置'}\n"
+        f"目标日期：{date_info.get('target_date') or '未设置'}"
+    )
     try:
-        result = create_plan(
-            title=plan_title,
-            description=description,
-            start_date=date_info["start_date"],
-            target_date=date_info["target_date"]
-        )
+        from app.common.langchain_tools import _push_notification, _notification_channels
+        _push_notification(notif_title, notif_content)
+    except Exception:
+        pass
 
-        # 检查是否成功
-        if "成功" in result or "创建成功" in result:
-            return {
-                "final_response": f" {result}",
-                "agent_output": f" {result}",
-                "tools_called": ["create_plan"],
-                # 清空所有计划创建相关状态，防止下次路由又回到 plan_confirmation
-                "waiting_for_plan_confirmation": False,
-                "waiting_for_plan_mode_confirm": False,
-                "plan_text_cache": None,
-                "plan_title": None,
-                "plan_type": None,
-                "user_confirmed_create": False,
-                "execution_trace": []
-            }
-        else:
-            # 创建失败
-            return {
-                "final_response": f"计划创建失败：{result}\n\n您可以手动复制以下计划内容：\n\n{plan_text[:500]}...",
-                "agent_output": f"计划创建失败：{result}",
-                "execution_trace": [
-                    {
-                        "node": "create_plan_to_platform",
-                        "plan_title": plan_title,
-                        "success": False,
-                        "error": result
-                    }
-                ]
-            }
+    msg = f"计划《{plan_title}》已保存到平台"
+    if existing_plan_id:
+        msg += f"（编号：{existing_plan_id}）"
 
-    except Exception as e:
-        return {
-            "final_response": f"计划创建失败：{str(e)}\n\n您可以手动复制以下计划内容到平台：\n\n{plan_text[:500]}...",
-            "agent_output": f"计划创建失败：{str(e)}",
-            "error": str(e),
-            "execution_trace": [
-                {
-                    "node": "create_plan_to_platform",
-                    "error": str(e),
-                    "success": False
-                }
-            ]
-        }
+    return {
+        "final_response": msg,
+        "agent_output": msg,
+        "tools_called": ["create_plan"],
+        # —— 计划流程结束，清掉所有计划字段，下次对话从头开始 ——
+        "plan_flow_cancelled": True,
+        "waiting_for_plan_confirmation": False,
+        "waiting_for_plan_mode_confirm": False,
+        "user_confirmed_create": False,
+        "plan_generated": False,
+        "needs_plan_building": False,
+        "plan_text_cache": None,
+        "plan_title": None,
+        "plan_type": None,
+        "plan_info": None,
+        "plan_summary": None,
+        "plan_conversation_history": [],
+        "original_user_input": None,
+        "chat_override_input": None,
+        "ranked_tools": [],
+        "parameter_extraction_status": "",
+        "tool_call_results": [],
+        "tool_data_parts": [],
+        "tool_success_count": 0,
+        "tool_total_count": 0,
+        "tool_fail_log": [],
+        "plan_metadata": None,
+        "doc_data_parts": [],
+        "doc_retrieval_status": "",
+        "execution_trace": [
+            {
+                "node": "create_plan_to_platform",
+                "plan_title": plan_title,
+                "plan_id": existing_plan_id,
+                "success": True
+            }
+        ]
+    }

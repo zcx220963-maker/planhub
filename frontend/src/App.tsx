@@ -18,24 +18,25 @@ import MyPosts from './pages/MyPosts';
 import Activities from './pages/Activities';
 import SystemConfig from './pages/SystemConfig';
 import LangGraphTest from './pages/LangGraphTest';
+import PlanLibrary from './pages/PlanLibrary';
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, isLoading } = useAuth();
-  
+
   if (isLoading) {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>加载中...</div>;
   }
-  
+
   return user ? children : <Navigate to="/login" />;
 };
 
 const PublicRoute = ({ children }: { children: React.ReactNode }) => {
   const { user, isLoading } = useAuth();
-  
+
   if (isLoading) {
     return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>加载中...</div>;
   }
-  
+
   return user ? <Navigate to="/dashboard" /> : children;
 };
 
@@ -140,16 +141,17 @@ const AppContent = () => {
         </ProtectedRoute>
       } />
       <Route path="/langgraph" element={
-        <ProtectedRoute>
-          <LangGraphTest />
-        </ProtectedRoute>
+        <LangGraphTest />
+      } />
+      <Route path="/plan-library" element={
+        <PlanLibrary />
       } />
       <Route path="/system-config" element={
         <ProtectedRoute>
           <SystemConfig />
         </ProtectedRoute>
       } />
-      <Route path="/" element={<Navigate to="/dashboard" />} />
+      <Route path="/" element={<Navigate to="/langgraph" />} />
     </Routes>
   );
 };

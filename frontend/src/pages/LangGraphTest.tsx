@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   Send,
   Zap,
-  ArrowLeft,
   Loader2,
   Bot,
   Target,
@@ -10,9 +9,7 @@ import {
   Search,
   History,
   Trash2,
-  Settings,
   Activity,
-  ChevronRight,
   Shield,
   AlertTriangle,
   Plus,
@@ -30,6 +27,8 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import DocumentManager from '../components/DocumentManager';
+import PlanVisualizationPanel from '../components/PlanVisualizationPanel';
+import PlanLibrary from './PlanLibrary';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -67,10 +66,11 @@ interface DebugInfo {
 const LangGraphTest = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
-  // 通过 Vite proxy 转发到 Java 后端（避免 CORS 预检拦截）
-  const AI_API_BASE = '/api/ai';
-  const CONVERSATIONS_API = '/api/ai/conversations';
+  // 直连 Python AI 后端（不再经过 Java 中转）
+  const AI_API_BASE = 'http://127.0.0.1:8000';
+  const CONVERSATIONS_API = 'http://127.0.0.1:8000/conversations';
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // 解析消息内容，将 [text](/path) 和裸 /plan/123 /post/456 转为可点击链接
   const parseMessageContent = (content: string) => {
@@ -154,7 +154,7 @@ const LangGraphTest = () => {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: '您好！我是 LangGraph 智能助手，可以帮您处理以下任务：\n\n制定计划\n  - "帮我制定一个Python学习计划"\n  - "制定旅行计划"\n\n搜索和查询\n  - "搜索学习计划"\n  - "查询知识库关于XXX的文档"\n\n发帖和打卡\n  - "帮我发帖，内容：今天完成了健身"\n  - "我要打卡"\n\n其他问题\n  - 任何日常对话或问题\n\n请告诉我您需要什么帮助？'
+      content: '您好！我是 LangGraph 智能助手，可以帮您处理以下任务：\n\n制定计划\n  - "帮我制定一个Python学习计划"\n  - "制定旅行计划"\n\n知识库问答\n  - 上传文档后，选择文档并提问\n  - "查询知识库关于XXX的文档"\n\n其他问题\n  - 任何日常对话或问题\n\n请告诉我您需要什么帮助？'
     }
   ]);
   // 多标签页隔离策略：
@@ -188,8 +188,17 @@ const LangGraphTest = () => {
     localStorage.setItem('orchestrator_sessions', JSON.stringify(sessions));
   };
   const [debugInfo, setDebugInfo] = useState<DebugInfo | null>(null);
-  const [showDebug, setShowDebug] = useState(false);
   const [showHistory, setShowHistory] = useState(true);
+  const [showVisualization, setShowVisualization] = useState(false);
+  const [showPlanLibrary, setShowPlanLibrary] = useState(false);
+  const userPrefersHistoryClosed = useRef(false); // 用户是否主动偏好收起历史
+  const [detailOpen, setDetailOpen] = useState(false); // 是否正在查看计划详情（HTML/打卡）
+  const [mermaidCode, setMermaidCode] = useState<string>('');
+  const [streamingPlanText, setStreamingPlanText] = useState<string>('');  // 流式计划文本（实时渲染）
+  const [isPlanStreaming, setIsPlanStreaming] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string>('');  // iframe 预览 URL（后端生成的 HTML 页面）
+  const [logs, setLogs] = useState<{ content: string; time: string }[]>([]);  // 实时执行日志
+  const logsEndRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [activeQuickAction, setActiveQuickAction] = useState<number | null>(null);
@@ -199,40 +208,22 @@ const LangGraphTest = () => {
     (t: any) => ["plan_mode_confirm", "plan_generator", "plan_confirmation"].includes(t.node)
   ) ?? false;
 
-  // 快捷功能按钮配置
+  // 快捷功能按钮配置（只保留 Python 后端能直接处理的功能）
   const quickActions = [
     {
       label: '制定计划',
       icon: '',
       text: '制定计划',
-      description: '生成各类计划',
-    },
-    {
-      label: '搜索',
-      icon: '',
-      text: '搜索',
-      description: '搜索计划和帖子'
-    },
-    {
-      label: '我要打卡',
-      icon: '',
-      text: '我要打卡',
-      description: '进行今日打卡'
-    },
-    {
-      label: '发帖',
-      icon: '',
-      text: '发帖',
-      description: '发布到社区'
+      description: '生成各类计划（保存到本地 + 推送通知）',
     },
     {
       label: '知识库问答',
       icon: '',
-      text: selectedDocIds.length > 0 
-        ? '查询知识库' 
+      text: selectedDocIds.length > 0
+        ? '查询知识库'
         : '请先在右侧选择要查询的文档',
-      description: selectedDocIds.length > 0 
-        ? '基于选中的文档问答' 
+      description: selectedDocIds.length > 0
+        ? '基于选中的文档问答'
         : '请先选中文档'
     },
   ];
@@ -240,11 +231,21 @@ const LangGraphTest = () => {
   // 快捷功能按钮点击处理
   const handleQuickAction = (text: string, index: number) => {
     if (isLoading) return;
-    setQuery(text);
     setActiveQuickAction(index);
-    // 自动聚焦输入框
-    const input = document.querySelector('input[type="text"]') as HTMLInputElement;
-    if (input) input.focus();
+    // 「制定计划」不直接发送，而是填入提示语让用户填写具体内容
+    if (text === '制定计划') {
+      setQuery('我想制定一个关于');
+    } else {
+      setQuery(text);
+    }
+    // 自动聚焦输入框并把光标移到末尾
+    setTimeout(() => {
+      const input = document.querySelector('input[type="text"]') as HTMLInputElement;
+      if (input) {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }
+    }, 0);
   };
 
   useEffect(() => {
@@ -260,10 +261,20 @@ const LangGraphTest = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // 日志自动滚动到最新
+  useEffect(() => {
+    if (logs.length > 0) {
+      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs]);
+
+  // 独立模式伪用户 ID — 所有 RAG 操作统一使用此 ID
+  const STANDALONE_USER_ID = 'standalone_user';
+
   // 加载文档列表
   const loadDocuments = async () => {
     try {
-      const response = await fetch(`${AI_API_BASE}/rag/documents`, {
+      const response = await fetch(`${AI_API_BASE}/rag/documents?user_id=${STANDALONE_USER_ID}`, {
         headers: getAuthHeaders(),
       });
       if (response.ok) {
@@ -283,6 +294,8 @@ const LangGraphTest = () => {
       for (let i = 0; i < files.length; i++) {
         formData.append('files', files[i]);
       }
+      // 独立模式下指定 user_id，确保与查询/长期记忆一致
+      formData.append('user_id', STANDALONE_USER_ID);
 
       const response = await fetch(`${AI_API_BASE}/rag/upload/batch`, {
         method: 'POST',
@@ -310,7 +323,7 @@ const LangGraphTest = () => {
   // 删除文档
   const handleDeleteDocument = async (docId: number) => {
     try {
-      const response = await fetch(`${AI_API_BASE}/rag/documents/${docId}`, {
+      const response = await fetch(`${AI_API_BASE}/rag/documents/${docId}?user_id=${STANDALONE_USER_ID}`, {
         method: 'DELETE',
         headers: getAuthHeaders(),
       });
@@ -349,7 +362,7 @@ const LangGraphTest = () => {
   const loadConversations = async () => {
     setIsLoadingHistory(true);
     try {
-      const userId = user?.id || 'anonymous';
+      const userId = user?.id || 'standalone_user';
       const response = await fetch(`${CONVERSATIONS_API}?user_id=${userId}&module=orchestrator`, {
         headers: getAuthHeaders(),
       });
@@ -368,17 +381,19 @@ const LangGraphTest = () => {
     setMessages([
       {
         role: 'assistant',
-        content: '您好！我是 LangGraph 智能助手，可以帮您处理以下任务：\n\n制定计划\n  - "帮我制定一个Python学习计划"\n  - "制定旅行计划"\n\n搜索和查询\n  - "搜索学习计划"\n  - "查询知识库关于XXX的文档"\n\n发帖和打卡\n  - "帮我发帖，内容：今天完成了健身"\n  - "我要打卡"\n\n其他问题\n  - 任何日常对话或问题\n\n请告诉我您需要什么帮助？'
+        content: '您好！我是 LangGraph 智能助手，可以帮您处理以下任务：\n\n制定计划\n  - "帮我制定一个Python学习计划"\n  - "制定旅行计划"\n\n知识库问答\n  - 上传文档后，选择文档并提问\n  - "查询知识库关于XXX的文档"\n\n其他问题\n  - 任何日常对话或问题\n\n请告诉我您需要什么帮助？'
       }
     ]);
     setSessionId('');
     setDebugInfo(null);
     setQuery('');
+    setLogs([]);
   };
 
   const loadConversation = async (convSessionId: string) => {
     try {
-      const response = await fetch(`${AI_API_BASE}/orchestrator/history/${convSessionId}`, {
+      // Python GET /conversations/{session_id} 返回 { history: [...], ... }
+      const response = await fetch(`${CONVERSATIONS_API}/${convSessionId}`, {
         headers: getAuthHeaders(),
       });
       if (response.ok) {
@@ -410,7 +425,7 @@ const LangGraphTest = () => {
     if (!text.trim() || isLoading) return;
 
     let messagesToAdd: Message[] = [];
-    
+
     if (showUserMsg) {
       const userMessage: Message = {
         role: 'user',
@@ -443,179 +458,189 @@ const LangGraphTest = () => {
       streamResponse: '',
     });
 
-    try {
-      const response = await fetch(`${AI_API_BASE}/orchestrator/stream`, {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          message: text,
-          session_id: sessionId || undefined,
-          user_id: user?.id || 'anonymous',
-          doc_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
-        })
-      });
+    // 使用 WebSocket 实时流式通信（替代旧的 SSE fetch）
+    const token = localStorage.getItem('token') || '';
+    const WS_URL = `${AI_API_BASE.replace('http', 'ws')}/orchestrator/ws/chat`;
 
-      if (!response.ok) {
-        throw new Error(`请求失败: ${response.status}`);
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+
+    let lastContent = '';
+    let lastTrace: any[] = [];
+    let finalSessionId = sessionId;
+    let finalIntent = '';
+    let finalConfidence = 0;
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        message: text,
+        session_id: sessionId || undefined,
+        user_id: user?.id || 'standalone_user',
+        doc_ids: selectedDocIds.length > 0 ? selectedDocIds : undefined,
+        authorization: token ? `Bearer ${token}` : '',
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      let data: any;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
       }
 
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let lastContent = '';
-      let lastTrace: any[] = [];
-      let finalSessionId = sessionId;
-      let finalIntent = '';
-      let finalConfidence = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() || '';
-
-        for (const part of parts) {
-          if (!part.trim()) continue;
-
-          let eventType = 'message';
-          let dataStr = '';
-
-          for (const line of part.split('\n')) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              dataStr = line.slice(6).trim();
-            }
+      if (data.type === 'token') {
+        // 段落缓冲追加（后端已按换行 flush，频率远低于逐 token）
+        lastContent += data.content || '';
+        // 直接更新最后一条消息的 content，不触发整个消息列表重渲染
+        setMessages(prev => {
+          const lastIdx = prev.length - 1;
+          if (prev[lastIdx]?.role === 'assistant') {
+            // 只修改最后一条，但用新引用触发渲染
+            const updated = { ...prev[lastIdx], content: lastContent };
+            return [...prev.slice(0, lastIdx), updated];
           }
-
-          if (!dataStr) continue;
-
-          try {
-            const data = JSON.parse(dataStr);
-
-            if (eventType === 'token') {
-              lastContent += data.content || '';
-              setMessages(prev => {
-                const newMsgs = [...prev];
-                const lastIdx = newMsgs.length - 1;
-                if (newMsgs[lastIdx]?.role === 'assistant') {
-                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent };
-                }
-                return newMsgs;
-              });
-              setDebugInfo(prev => ({
-                ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
-                streamResponse: lastContent,
-                isStreaming: true,
-              }));
-            } else if (eventType === 'response') {
-              if (!lastContent) {
-                lastContent = data.content || lastContent;
-                setMessages(prev => {
-                  const newMsgs = [...prev];
-                  const lastIdx = newMsgs.length - 1;
-                  if (newMsgs[lastIdx]?.role === 'assistant') {
-                    newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent };
-                  }
-                  return newMsgs;
-                });
-              }
-              setDebugInfo(prev => ({
-                ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
-                streamResponse: lastContent || (data.content || ''),
-                isStreaming: true,
-              }));
-            } else if (eventType === 'trace') {
-              const newTraces = data.traces || [];
-              lastTrace = [...lastTrace, ...newTraces];
-              for (const t of newTraces) {
-                if (t.node === 'supervisor' && t.intent) finalIntent = t.intent;
-              }
-              setDebugInfo(prev => ({
-                ...(prev || { intent: finalIntent, confidence: 0, selectedAgent: finalIntent, blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: finalSessionId }),
-                intent: finalIntent || prev?.intent || '',
-                selectedAgent: finalIntent || prev?.selectedAgent || '',
-                executionTrace: lastTrace,
-                toolsCalled: lastTrace.flatMap((t: any) => t.tools_called || []),
-                isStreaming: true,
-              }));
-            } else if (eventType === 'done') {
-              lastContent = data.response || lastContent;
-              finalSessionId = data.session_id || finalSessionId;
-              finalIntent = data.intent || finalIntent;
-              const execTrace = data.execution_trace || [];
-              lastTrace = execTrace.length > 0 ? execTrace : lastTrace;
-
-              setMessages(prev => {
-                const newMsgs = [...prev];
-                const lastIdx = newMsgs.length - 1;
-                if (newMsgs[lastIdx]?.role === 'assistant') {
-                  newMsgs[lastIdx] = {
-                    ...newMsgs[lastIdx],
-                    content: lastContent,
-                    isStreaming: false,
-                    intent: finalIntent || undefined,
-                    confidence: finalConfidence || 0,
-                    executionTrace: lastTrace,
-                    blockedByCapability: false,
-                  };
-                }
-                return newMsgs;
-              });
-
-              setSessionId(finalSessionId);
-              setDebugInfo({
-                intent: finalIntent,
-                confidence: finalConfidence,
-                selectedAgent: finalIntent,
-                blockedByCapability: false,
-                handoffReason: '',
-                executionTrace: lastTrace,
-                toolsCalled: lastTrace.flatMap((t: any) => t.tools_called || []),
-                sessionId: finalSessionId,
-                isStreaming: false,
-                streamResponse: lastContent,
-                planMetadata: data.plan_metadata || undefined,
-              });
-            } else if (eventType === 'error') {
-              lastContent = `抱歉，发生错误：${data.detail || '未知错误'}`;
-              setMessages(prev => {
-                const newMsgs = [...prev];
-                const lastIdx = newMsgs.length - 1;
-                if (newMsgs[lastIdx]?.role === 'assistant') {
-                  newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent, isStreaming: false };
-                }
-                return newMsgs;
-              });
-              setDebugInfo(prev => ({
-                ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
-                isStreaming: false,
-              }));
-            }
-          } catch {
-          }
+          return prev;
+        });
+        // 实时更新可视化面板
+        if (showVisualization) {
+          setStreamingPlanText(lastContent);
         }
+      } else if (data.type === 'log') {
+        // 执行日志：实时显示代理执行进度
+        const time = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        setLogs(prev => [...prev, { content: data.content, time }]);
+      } else if (data.type === 'streaming_complete') {
+        // LLM 流式生成结束：立即停止打字机动画（无需等待整个图执行完）
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          const lastIdx = newMsgs.length - 1;
+          if (newMsgs[lastIdx]?.role === 'assistant' && newMsgs[lastIdx].isStreaming) {
+            newMsgs[lastIdx] = { ...newMsgs[lastIdx], isStreaming: false };
+          }
+          return newMsgs;
+        });
+        setIsPlanStreaming(false);
+      } else if (data.type === 'html_preview_ready') {
+        // HTML 生成完毕，自动打开右侧预览面板
+        setPreviewUrl(data.preview_url);
+        setShowVisualization(true);
+      } else if (data.type === 'node_complete') {
+        // LLM 生成结束（但流程可能还在继续）
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          const lastIdx = newMsgs.length - 1;
+          if (newMsgs[lastIdx]?.role === 'assistant') {
+            newMsgs[lastIdx] = { ...newMsgs[lastIdx], isStreaming: false };
+          }
+          return newMsgs;
+        });
+      } else if (data.type === 'done') {
+        // 完整流程结束
+        lastContent = data.response || lastContent;
+        finalSessionId = data.session_id || finalSessionId;
+        finalIntent = data.intent || finalIntent;
+        const execTrace = data.execution_trace || [];
+        lastTrace = execTrace.length > 0 ? execTrace : lastTrace;
+
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          const lastIdx = newMsgs.length - 1;
+          if (newMsgs[lastIdx]?.role === 'assistant') {
+            newMsgs[lastIdx] = {
+              ...newMsgs[lastIdx],
+              content: lastContent,
+              isStreaming: false,
+              intent: finalIntent || undefined,
+              confidence: finalConfidence || 0,
+              executionTrace: lastTrace,
+              blockedByCapability: false,
+            };
+          }
+          return newMsgs;
+        });
+
+        setSessionId(finalSessionId);
+        setDebugInfo({
+          intent: finalIntent,
+          confidence: finalConfidence,
+          selectedAgent: finalIntent,
+          blockedByCapability: false,
+          handoffReason: '',
+          executionTrace: lastTrace,
+          toolsCalled: lastTrace.flatMap((t: any) => t.tools_called || []),
+          sessionId: finalSessionId,
+          isStreaming: false,
+          streamResponse: lastContent,
+          planMetadata: data.plan_metadata || undefined,
+        });
+
+        // 最终文本更新到可视化面板
+        if (showVisualization) {
+          setStreamingPlanText(lastContent);
+          setIsPlanStreaming(false);
+        }
+
+        // 如果后端生成了 HTML 预览页面，自动切换到 iframe 预览
+        if (data.preview_url) {
+          setPreviewUrl(data.preview_url);
+          setShowVisualization(true);
+        }
+
+        setIsLoading(false);
+        wsRef.current = null;
+      } else if (data.type === 'error') {
+        lastContent = `抱歉，发生错误：${data.detail || '未知错误'}`;
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          const lastIdx = newMsgs.length - 1;
+          if (newMsgs[lastIdx]?.role === 'assistant') {
+            newMsgs[lastIdx] = { ...newMsgs[lastIdx], content: lastContent, isStreaming: false };
+          }
+          return newMsgs;
+        });
+        setDebugInfo(prev => ({
+          ...(prev || { intent: '', confidence: 0, selectedAgent: '', blockedByCapability: false, executionTrace: [], toolsCalled: [], sessionId: '' }),
+          isStreaming: false,
+        }));
+        setIsLoading(false);
+        wsRef.current = null;
       }
-    } catch (error) {
-      console.error('Chat error:', error);
+    };
+
+    ws.onerror = () => {
+      console.error('WebSocket error');
       setMessages(prev => {
         const newMsgs = [...prev];
         const lastIdx = newMsgs.length - 1;
         if (newMsgs[lastIdx]?.role === 'assistant') {
           newMsgs[lastIdx] = {
             ...newMsgs[lastIdx],
-            content: `抱歉，请求失败：${error instanceof Error ? error.message : '未知错误'}`,
+            content: '连接失败，请检查 AI 服务是否启动 (python main.py)',
             isStreaming: false
           };
         }
         return newMsgs;
       });
-    } finally {
       setIsLoading(false);
-    }
+      wsRef.current = null;
+    };
+
+    ws.onclose = () => {
+      // 如果连接关闭但还没收到 done/error，确保状态恢复
+      if (isLoading) {
+        setIsLoading(false);
+        setMessages(prev => {
+          const newMsgs = [...prev];
+          const lastIdx = newMsgs.length - 1;
+          if (newMsgs[lastIdx]?.role === 'assistant' && newMsgs[lastIdx]?.isStreaming) {
+            newMsgs[lastIdx] = { ...newMsgs[lastIdx], isStreaming: false };
+          }
+          return newMsgs;
+        });
+      }
+      wsRef.current = null;
+    };
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -627,6 +652,14 @@ const LangGraphTest = () => {
   };
 
   const handleConfirmAction = async (answer: string) => {
+    // 点击确认后立即打开右侧可视化窗口（计划生成过程中实时展示）
+    if (answer === '是') {
+      setShowVisualization(true);
+      setStreamingPlanText('');
+      setIsPlanStreaming(true);
+      setPreviewUrl('');  // 清空旧的预览 URL，等待新的
+      setLogs([]);  // 清空旧日志，准备记录本次执行
+    }
     const payload = answer === '是' ? '__click_confirm__' : '__click_reject__';
     await sendMessage(payload, false);
   };
@@ -974,19 +1007,54 @@ const LangGraphTest = () => {
     <div style={styles.container}>
       {/* 头部 */}
       <div style={styles.header}>
-        <button style={styles.backButton} onClick={() => navigate('/dashboard')}>
-          <ArrowLeft size={20} />
+        {/* 左上角历史切换按钮 */}
+        <button
+          style={{
+            ...styles.historyToggleBtn,
+            ...(detailOpen ? styles.historyToggleBtnDisabled : {}),
+          }}
+          onClick={() => {
+            if (detailOpen) return; // 查看详情时禁止操作
+            const next = !showHistory;
+            userPrefersHistoryClosed.current = !next; // 记录用户主动偏好
+            setShowHistory(next);
+          }}
+          title={detailOpen ? '查看计划详情时不可用' : '历史记录'}
+        >
+          <History size={20} />
         </button>
 
-        {/* 左上角切换按钮 */}
-        <div style={styles.tabSwitchContainer}>
+        {/* 左上角切换按钮 + 计划库按钮 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={styles.tabSwitchContainer}>
+            <button
+              style={{
+                ...styles.tabButton,
+                ...styles.tabButtonActive
+              }}
+            >
+              plan助手
+            </button>
+          </div>
+
+          {/* 计划库按钮 */}
           <button
             style={{
-              ...styles.tabButton,
-              ...styles.tabButtonActive
+              ...styles.headerToolBtn,
+              ...(showPlanLibrary ? styles.headerToolBtnActive : {}),
             }}
+            onClick={() => {
+              if (showPlanLibrary) {
+                // 关闭计划库时：重置详情状态，并按用户偏好还原历史
+                setDetailOpen(false);
+                if (!userPrefersHistoryClosed.current) setShowHistory(true);
+              }
+              setShowPlanLibrary(!showPlanLibrary);
+            }}
+            title="计划库"
           >
-            plan助手
+            <BookOpen size={16} />
+            <span>计划库</span>
           </button>
         </div>
 
@@ -1014,42 +1082,28 @@ const LangGraphTest = () => {
             )}
           </button>
 
-          {/* 显示/隐藏调试面板 */}
+          {/* 显示/隐藏可视化面板 */}
           <button
             style={{
               ...styles.toggleButton,
-              background: showDebug ? '#6366f1' : '#f1f5f9',
-              color: showDebug ? 'white' : '#64748b',
+              background: showVisualization ? '#10b981' : '#f1f5f9',
+              color: showVisualization ? 'white' : '#64748b',
             }}
-            onClick={() => setShowDebug(!showDebug)}
-            title={showDebug ? '隐藏调试面板' : '显示调试面板'}
+            onClick={() => setShowVisualization(!showVisualization)}
+            title={showVisualization ? '隐藏可视化' : '显示可视化'}
           >
-            <Settings size={18} />
-            <span>调试</span>
-          </button>
-
-          {/* 显示/隐藏历史 */}
-          <button
-            style={{
-              ...styles.toggleButton,
-              background: showHistory ? '#64748b' : '#f1f5f9',
-              color: showHistory ? 'white' : '#64748b',
-            }}
-            onClick={() => setShowHistory(!showHistory)}
-            title={showHistory ? '隐藏历史' : '显示历史'}
-          >
-            <History size={18} />
-            <span>历史</span>
+            <Activity size={18} />
+            <span>可视化</span>
           </button>
         </div>
       </div>
 
       <div style={styles.mainContent}>
-        {/* 左侧 - 会话历史 */}
-        {showHistory && (
+        {/* 左侧 - 会话历史列表（默认展开，开可视化/计划库时自动收起） */}
+        {showHistory && !showVisualization && (
           <div style={styles.sidebar}>
             <div style={styles.sidebarHeader}>
-              <h3>对话历史</h3>
+              <span style={styles.sidebarTitle}>对话历史</span>
               <div style={styles.headerActions}>
                 <button
                   style={styles.newButton}
@@ -1104,8 +1158,30 @@ const LangGraphTest = () => {
           </div>
         )}
 
+        {/* 计划库内嵌面板（70%，仅在 showPlanLibrary 时显示） */}
+        {showPlanLibrary && (
+          <div style={styles.planLibraryPanel}>
+            <PlanLibrary
+              inline
+              onClose={() => setShowPlanLibrary(false)}
+              onDetailChange={(open) => {
+                setDetailOpen(open);
+                if (open) {
+                  // 进入详情：强制收起历史
+                  setShowHistory(false);
+                } else {
+                  // 退出详情：用户没主动收起过 → 自动展开
+                  if (!userPrefersHistoryClosed.current) {
+                    setShowHistory(true);
+                  }
+                }
+              }}
+            />
+          </div>
+        )}
+
         {/* 中间 - 聊天区域 */}
-        <div style={styles.chatArea}>
+        <div style={showPlanLibrary ? styles.chatPanelNarrow : styles.chatArea}>
           <div style={styles.messagesContainer}>
             {messages.map((msg, index) => {
               const isUser = msg.role === 'user';
@@ -1262,7 +1338,11 @@ const LangGraphTest = () => {
                       </div>
                     )}
                     {!isUser && shouldShowConfirm(msg) && !editingPlan && (
-                      <div style={{ display: 'flex', gap: '12px', marginTop: '12px' }}>
+                      <div style={{ marginTop: '12px' }}>
+                        <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                          不想回答？创建计划请点击
+                        </div>
+                        <div style={{ display: 'flex', gap: '12px' }}>
                         <button
                           onClick={() => handleConfirmAction('是')}
                           disabled={isLoading}
@@ -1319,6 +1399,7 @@ const LangGraphTest = () => {
                         >
                           取消
                         </button>
+                        </div>
                       </div>
                     )}
                     {!isUser && !msg.isStreaming && editingPlan && shouldShowModify(msg) && msg === messages[messages.length - 1] && (
@@ -1469,398 +1550,102 @@ const LangGraphTest = () => {
           </div>
         </div>
 
-        {/* 右侧 - 调试面板 */}
-        {showDebug && (
-          <div style={styles.debugPanel}>
-            <div style={styles.sidebarHeader}>
-              <h3>调试信息</h3>
-            </div>
-
-            <div style={{ padding: '16px', flex: 1, overflow: 'auto' }}>
-              {!debugInfo ? (
-                <div style={{ textAlign: 'center', color: '#64748b', padding: '40px 0' }}>
-                  <Bot size={48} color="#cbd5e1" />
-                  <p style={{ marginTop: '12px' }}>发送消息后查看调试信息</p>
+        {/* 右侧 - 计划预览面板（生成中显示日志，生成完毕后显示 HTML） */}
+        {showVisualization && !showPlanLibrary && (
+          <div style={styles.visualizationPanel}>
+            {previewUrl ? (
+              /* HTML 生成完毕 → 显示 iframe */
+              <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column' }}>
+                <div style={{
+                  padding: '8px 12px',
+                  background: '#f8fafc',
+                  borderBottom: '1px solid #e2e8f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexShrink: 0,
+                }}>
+                  <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 500 }}>
+                    杂志风预览
+                  </span>
+                  <button
+                    onClick={() => {
+                      setShowVisualization(false);
+                      setPreviewUrl('');
+                      setStreamingPlanText('');
+                      setIsPlanStreaming(false);
+                      setLogs([]);
+                    }}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      color: '#94a3b8', padding: '4px', borderRadius: '4px',
+                    }}
+                    title="关闭预览"
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-                  {/* 意图识别 */}
-                  <div>
-                    <h4 style={styles.debugSectionTitle}>
-                      意图识别
-                    </h4>
-                    <div style={styles.debugCard}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                        <div style={{
-                          padding: '4px 8px',
-                          backgroundColor: getIntentColor(debugInfo.intent),
-                          color: 'white',
-                          borderRadius: '4px',
-                          fontSize: '12px',
-                          fontWeight: 600
-                        }}>
-                          {getIntentLabel(debugInfo.intent)}
-                        </div>
-                        <ChevronRight size={16} color="#64748b" />
-                        <div style={{
-                          padding: '4px 8px',
-                          backgroundColor: debugInfo.blockedByCapability ? '#f59e0b' : '#3b82f6',
-                          color: 'white',
-                          borderRadius: '4px',
-                          fontSize: '12px',
-                          fontWeight: 600
-                        }}>
-                          {debugInfo.blockedByCapability ? '已降级' : getIntentLabel(debugInfo.selectedAgent)}
-                        </div>
-                      </div>
-                      <div style={{ fontSize: '12px', color: '#64748b' }}>
-                        置信度: {typeof debugInfo.confidence === 'number' ? `${(debugInfo.confidence * 100).toFixed(1)}%` : 'N/A'}
-                      </div>
-                      {debugInfo.handoffReason && (
-                        <div style={{
-                          marginTop: '8px',
-                          padding: '6px 10px',
-                          backgroundColor: '#fef3c7',
-                          borderRadius: '4px',
-                          fontSize: '12px',
-                          color: '#92400e'
-                        }}>
-                          {debugInfo.handoffReason}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 数据来源：API + 文档 */}
-                  {debugInfo.planMetadata && (debugInfo.planMetadata.api_sources.length > 0 || debugInfo.planMetadata.doc_sources.length > 0) && (
-                    <div>
-                      <h4 style={styles.debugSectionTitle}>
-                        数据来源
-                      </h4>
-
-                      {/* API 来源 */}
-                      {debugInfo.planMetadata.api_sources.length > 0 && (
-                        <div style={{ marginBottom: '12px' }}>
-                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>
-                            API 数据 ({debugInfo.planMetadata.tool_success_count}/{debugInfo.planMetadata.tool_total_count})
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            {debugInfo.planMetadata.api_sources.map((src: any, i: number) => (
-                              <div key={i} style={{
-                                display: 'flex', alignItems: 'center', gap: '8px',
-                                padding: '6px 10px',
-                                backgroundColor: src.success ? '#f0fdf4' : '#fef2f2',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                              }}>
-                                <span style={{ color: src.success ? '#16a34a' : '#dc2626' }}>
-                                  {src.success ? '✓' : '✗'}
-                                </span>
-                                <span style={{ fontWeight: 500, color: '#1e293b' }}>{getToolLabel(src.tool)}</span>
-                                {src.summary && (
-                                  <span style={{ color: '#64748b', fontSize: '11px' }}>— {src.summary}</span>
-                                )}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 文档来源 */}
-                      {debugInfo.planMetadata.doc_sources.length > 0 && (
-                        <div>
-                          <div style={{ fontSize: '11px', fontWeight: 600, color: '#64748b', marginBottom: '6px' }}>
-                            知识库文档
-                          </div>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            {debugInfo.planMetadata.doc_sources.map((src: any, i: number) => (
-                              <div key={i} style={{
-                                display: 'flex', alignItems: 'center', gap: '8px',
-                                padding: '6px 10px',
-                                backgroundColor: '#eff6ff',
-                                borderRadius: '6px',
-                                fontSize: '12px',
-                              }}>
-                                <span style={{ color: '#2563eb' }}>📄</span>
-                                <span style={{ fontWeight: 500, color: '#1e293b' }}>{src.name}</span>
-                                <span style={{ color: '#64748b', fontSize: '11px' }}>引用 {src.chunks} 段</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* 失败的工具（折叠显示） */}
-                      {debugInfo.planMetadata.tool_fail_log.length > 0 && (
-                        <details style={{ marginTop: '8px' }}>
-                          <summary style={{ fontSize: '11px', color: '#92400e', cursor: 'pointer' }}>
-                            ⚠ {debugInfo.planMetadata.tool_fail_log.length} 个工具调用失败
-                          </summary>
-                          <div style={{ marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                            {debugInfo.planMetadata.tool_fail_log.map((f: any, i: number) => (
-                              <div key={i} style={{
-                                padding: '4px 8px',
-                                backgroundColor: '#fef2f2',
-                                borderRadius: '4px',
-                                fontSize: '11px',
-                                color: '#991b1b',
-                              }}>
-                                {getToolLabel(f.tool)}: {f.error}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
-                      )}
-                    </div>
-                  )}
-
-                  {/* 执行流程（流式实时更新） */}
-                  <div>
-                    <h4 style={styles.debugSectionTitle}>
-                      执行流程
-                      {debugInfo.isStreaming && (
-                        <span style={{
-                          marginLeft: '8px',
-                          fontSize: '11px',
-                          fontWeight: 400,
-                          color: '#3b82f6',
-                        }}>
-                          ● 进行中
+                <iframe
+                  src={AI_API_BASE + previewUrl}
+                  style={{
+                    flex: 1,
+                    border: 'none',
+                    width: '100%',
+                    background: '#fff',
+                  }}
+                  title="计划预览"
+                  sandbox="allow-same-origin"
+                />
+              </div>
+            ) : (
+              /* 生成中 → 显示执行日志（同一位置） */
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                <div style={{
+                  padding: '8px 16px',
+                  background: '#f8fafc',
+                  borderBottom: '1px solid #e2e8f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  flexShrink: 0,
+                }}>
+                  <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: '#6366f1' }} />
+                  <span style={{ fontSize: '13px', color: '#334155', fontWeight: 500 }}>
+                    生成中...
+                  </span>
+                </div>
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '16px',
+                  background: '#0f172a',
+                  fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
+                  fontSize: '13px',
+                  lineHeight: 1.8,
+                }}>
+                  {logs.length === 0 ? (
+                    <span style={{ color: '#64748b' }}>等待执行...</span>
+                  ) : (
+                    logs.map((log, i) => (
+                      <div key={i} style={{ display: 'flex', gap: '10px', marginBottom: '4px' }}>
+                        <span style={{ color: '#475569', flexShrink: 0, userSelect: 'none' }}>
+                          [{log.time}]
                         </span>
-                      )}
-                    </h4>
-                    {debugInfo.executionTrace.length === 0 && debugInfo.isStreaming && (
-                      <div style={{
-                        padding: '16px',
-                        textAlign: 'center',
-                        color: '#64748b',
-                        fontSize: '12px',
-                      }}>
-                        <Loader2 size={20} style={{ animation: 'spin 1s linear infinite', marginBottom: '8px' }} />
-                        <div>正在分析请求...</div>
+                        <span style={{ color: '#cbd5e1' }}>
+                          {log.content}
+                        </span>
                       </div>
-                    )}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-                      {debugInfo.executionTrace.map((trace: any, index: number) => {
-                        const nodeName = trace?.node || trace?.name || 'unknown';
-                        const nodeInfo = getNodeInfo(nodeName, trace);
-                        const isSuccess = trace?.success !== false;
-                        const isLast = index === debugInfo.executionTrace.length - 1;
-                        const isCurrent = debugInfo.isStreaming && isLast; // 流式进行中最后一个节点高亮
-
-                        return (
-                          <div key={index} style={{ display: 'flex', position: 'relative' }}>
-                            {/* 时间轴竖线 */}
-                            {!isLast && (
-                              <div style={{
-                                position: 'absolute',
-                                left: '15px',
-                                top: '32px',
-                                bottom: '-8px',
-                                width: '2px',
-                                backgroundColor: isSuccess ? '#e2e8f0' : '#fecaca',
-                              }} />
-                            )}
-
-                            {/* 节点图标 */}
-                            <div style={{
-                              width: '32px',
-                              height: '32px',
-                              borderRadius: '50%',
-                              backgroundColor: isCurrent ? '#3b82f6' : (isSuccess ? nodeInfo.color : '#ef4444'),
-                              color: 'white',
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'center',
-                              flexShrink: 0,
-                              zIndex: 1,
-                              fontSize: '14px',
-                              fontWeight: 600,
-                              marginRight: '12px',
-                              boxShadow: isCurrent ? '0 0 0 3px #bfdbfe' : 'none',
-                            }}>
-                              {isCurrent ? (
-                                <Loader2 size={14} style={{ animation: 'spin 1s linear infinite' }} />
-                              ) : (
-                                isSuccess ? nodeInfo.icon : '✗'
-                              )}
-                            </div>
-
-                            {/* 节点内容 */}
-                            <div style={{
-                              flex: 1,
-                              marginBottom: isLast ? '0' : '12px',
-                              padding: '10px 12px',
-                              backgroundColor: isCurrent ? '#eff6ff' : (isSuccess ? '#f8fafc' : '#fef2f2'),
-                              borderRadius: '8px',
-                              border: `1px solid ${isCurrent ? '#bfdbfe' : (isSuccess ? '#e2e8f0' : '#fecaca')}`,
-                            }}>
-                              <div style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                marginBottom: '4px',
-                              }}>
-                                <span style={{
-                                  fontSize: '13px',
-                                  fontWeight: 600,
-                                  color: isCurrent ? '#1d4ed8' : '#1e293b',
-                                }}>
-                                  {nodeInfo.label}
-                                </span>
-                                <span style={{
-                                  fontSize: '11px',
-                                  color: isCurrent ? '#3b82f6' : (isSuccess ? '#64748b' : '#dc2626'),
-                                }}>
-                                  {isCurrent ? '执行中...' : (isSuccess ? '成功' : '失败')}
-                                </span>
-                              </div>
-
-                              {/* 关键信息（中文化详情） */}
-                              {nodeInfo.details.length > 0 && (
-                                <div style={{
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: '2px',
-                                  marginTop: '6px',
-                                }}>
-                                  {nodeInfo.details.map((detail: string, i: number) => (
-                                    <div key={i} style={{
-                                      fontSize: '11px',
-                                      color: '#64748b',
-                                      lineHeight: '1.4',
-                                    }}>
-                                      {detail}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-
-                              {/* 工具调用（中文标签 + 参数摘要） */}
-                              {trace?.tools_called && Array.isArray(trace.tools_called) && trace.tools_called.length > 0 && (
-                                <div style={{
-                                  marginTop: '8px',
-                                  paddingTop: '8px',
-                                  borderTop: '1px dashed #e2e8f0',
-                                }}>
-                                  <div style={{
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    color: '#475569',
-                                    marginBottom: '4px',
-                                  }}>
-                                    调用工具
-                                  </div>
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                    {trace.tools_called.map((tool: any, i: number) => {
-                                      // 支持两种格式：string 或 {tool, params, result}
-                                      const toolName = typeof tool === 'string' ? tool : tool.tool;
-                                      const toolParams = typeof tool === 'object' ? tool.params : null;
-                                      const toolResult = typeof tool === 'object' ? tool.result : null;
-                                      const toolSuccess = typeof tool === 'object' ? tool.success !== false : true;
-                                      return (
-                                        <div key={i} style={{
-                                          display: 'flex',
-                                          alignItems: 'flex-start',
-                                          gap: '6px',
-                                          fontSize: '11px',
-                                          padding: '4px 6px',
-                                          backgroundColor: toolSuccess ? '#f0fdf4' : '#fef2f2',
-                                          borderRadius: '4px',
-                                        }}>
-                                          <span style={{ color: toolSuccess ? '#16a34a' : '#dc2626', marginTop: '1px' }}>
-                                            {toolSuccess ? '✓' : '✗'}
-                                          </span>
-                                          <div style={{ flex: 1 }}>
-                                            <div style={{ color: '#1e293b', fontWeight: 500 }}>{getToolLabel(toolName)}</div>
-                                            {toolParams && (
-                                              <div style={{ color: '#64748b', marginTop: '2px', fontFamily: 'monospace', fontSize: '10px' }}>
-                                                参数: {typeof toolParams === 'string' ? toolParams : JSON.stringify(toolParams).slice(0, 100)}
-                                              </div>
-                                            )}
-                                            {toolResult && (
-                                              <div style={{ color: '#64748b', marginTop: '2px', fontSize: '10px' }}>
-                                                结果: {typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult).slice(0, 100)}
-                                              </div>
-                                            )}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* 文档引用 */}
-                              {trace?.docs_used && Array.isArray(trace.docs_used) && trace.docs_used.length > 0 && (
-                                <div style={{
-                                  marginTop: '8px',
-                                  paddingTop: '8px',
-                                  borderTop: '1px dashed #e2e8f0',
-                                }}>
-                                  <div style={{
-                                    fontSize: '11px',
-                                    fontWeight: 600,
-                                    color: '#475569',
-                                    marginBottom: '4px',
-                                  }}>
-                                    引用文档
-                                  </div>
-                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
-                                    {trace.docs_used.map((doc: any, i: number) => (
-                                      <div key={i} style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '6px',
-                                        fontSize: '11px',
-                                        padding: '4px 6px',
-                                        backgroundColor: '#eff6ff',
-                                        borderRadius: '4px',
-                                      }}>
-                                        <span style={{ color: '#2563eb' }}>📄</span>
-                                        <span style={{ color: '#1e293b', fontWeight: 500 }}>
-                                          {typeof doc === 'string' ? doc : (doc.name || doc.title || '未知文档')}
-                                        </span>
-                                        {typeof doc === 'object' && doc.chunks && (
-                                          <span style={{ color: '#64748b' }}>引用 {doc.chunks} 段</span>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* 会话信息 */}
-                  <div>
-                    <h4 style={styles.debugSectionTitle}>
-                      会话信息
-                    </h4>
-                    <div style={{
-                      padding: '12px',
-                      backgroundColor: '#f8fafc',
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                      color: '#64748b',
-                      fontFamily: 'monospace',
-                      wordBreak: 'break-all'
-                    }}>
-                      Session: {debugInfo.sessionId || 'N/A'}
-                    </div>
-                  </div>
+                    ))
+                  )}
+                  <div ref={logsEndRef} />
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         )}
 
         {/* 右侧 - 文档管理面板 */}
-        {showDocPanel && (
+        {showDocPanel && !showPlanLibrary && (
           <DocumentManager
             documents={documents}
             selectedDocIds={selectedDocIds}
@@ -1913,7 +1698,7 @@ const styles: { [key: string]: React.CSSProperties } = {
     background: 'white',
     boxShadow: '0 2px 4px rgba(0, 0, 0, 0.05)',
   },
-  backButton: {
+  historyToggleBtn: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1925,6 +1710,10 @@ const styles: { [key: string]: React.CSSProperties } = {
     cursor: 'pointer',
     color: '#64748b',
     transition: 'all 0.2s ease',
+  },
+  historyToggleBtnDisabled: {
+    opacity: 0.4,
+    cursor: 'not-allowed',
   },
   tabSwitchContainer: {
     display: 'flex',
@@ -1981,12 +1770,36 @@ const styles: { [key: string]: React.CSSProperties } = {
     display: 'flex',
     flexDirection: 'column',
   },
+  headerToolBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 14px',
+    border: '1px solid #e2e8f0',
+    borderRadius: '8px',
+    background: '#fff',
+    color: '#64748b',
+    fontSize: '14px',
+    fontWeight: 500,
+    cursor: 'pointer',
+    transition: 'all 0.15s',
+  },
+  headerToolBtnActive: {
+    background: '#eef2ff',
+    borderColor: '#c7d2fe',
+    color: '#6366f1',
+  },
   sidebarHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '16px 20px',
     borderBottom: '1px solid #e2e8f0',
+  },
+  sidebarTitle: {
+    fontSize: '15px',
+    fontWeight: 600,
+    color: '#0f172a',
   },
   headerActions: {
     display: 'flex',
@@ -2041,7 +1854,9 @@ const styles: { [key: string]: React.CSSProperties } = {
     transition: 'all 0.2s ease',
   },
   conversationItemActive: {
-    background: '#f1f5f9',
+    background: '#eef2ff',
+    border: '1px solid #c7d2fe',
+    boxShadow: '0 0 0 2px rgba(99, 102, 241, 0.15)',
   },
   conversationInfo: {
     flex: 1,
@@ -2084,6 +1899,21 @@ const styles: { [key: string]: React.CSSProperties } = {
   },
   chatArea: {
     flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    background: '#f8fafc',
+  },
+  planLibraryPanel: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    borderRight: '1px solid #e2e8f0',
+  },
+  chatPanelNarrow: {
+    width: '30%',
+    flexShrink: 0,
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
@@ -2223,6 +2053,17 @@ const styles: { [key: string]: React.CSSProperties } = {
     fontSize: '10px',
     fontWeight: 600,
     borderRadius: '9px',
+  },
+  // 可视化面板样式（与 chatArea 等宽，各占一半）
+  visualizationPanel: {
+    flex: 1,
+    background: 'white',
+    borderLeft: '2px solid #e2e8f0',
+    display: 'flex',
+    flexDirection: 'column',
+    overflow: 'hidden',
+    minWidth: 0,  // 防止 flex 子项溢出
+    transition: 'flex 0.3s ease',
   },
   // 调试面板样式
   debugPanel: {

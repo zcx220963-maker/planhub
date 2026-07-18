@@ -3,19 +3,22 @@ Agent Service — LangGraph 图结构定义
 负责创建和配置 Service 层的完整 Agent 流转图
 
 图结构：
-memory_load → supervisor → [plan_generator | plan_builder | assistant | rag | chat]
+memory_load → supervisor → [plan_generator | rag | chat]
                                     ↓
                           plan_generator → parameter_extractor (确认后)
                                                  ↓ ╱══════════╲
                                           tool_executor  doc_retriever
                                                  ↓ ╲══════════╱
-                                       plan_writer（等两者都完成）
+                                       plan_writer（等两者都完成，输出文本计划）
                                               ↓
-                          plan_writer → plan_confirmation
+                                       plan_confirmation（用户审阅文本计划）
                                               ↓                    ↓
                                         用户确认              用户拒绝
                                               ↓                    ↓
-                                    extract_plan_title      memory_save
+                                    plan_html_writer        memory_save
+                                    （生成杂志风 HTML）
+                                              ↓
+                                    extract_plan_title
                                               ↓
                                     create_plan_to_platform
                                               ↓
@@ -39,10 +42,10 @@ from .nodes.parameter_extractor import parameter_extractor_node
 from .nodes.tool_executor import tool_executor_node
 from .nodes.doc_retriever import doc_retriever_node
 from .nodes.plan_writer import plan_writer_node
+from .nodes.plan_html_writer import plan_html_writer_node
 from .nodes.plan_confirmation import plan_confirmation_node
 from .nodes.extract_plan_title import extract_plan_title_node
 from .nodes.create_plan_to_platform import create_plan_to_platform_node
-from .nodes.assistant import assistant_node
 from .nodes.rag import rag_node
 from .nodes.chat import chat_node
 from .memory_bridge import MemoryBridge
@@ -267,10 +270,26 @@ def route_by_intent(state) -> str:
     根据意图和能力开关路由到对应Agent
 
     路由逻辑：
+    0. 按钮信号（__click_confirm__/__click_reject__）直通对应节点，绕过 LLM 分类
     1. 首先检查能力开关，如果被阻止则降级
     2. 然后根据selected_agent路由
     3. 默认路由到chat
     """
+    user_input = state.get("user_input", "").strip()
+    is_button_signal = user_input in ("__click_confirm__", "__click_reject__")
+
+    # 按钮信号直通：不再经过 supervisor 的 LLM 分类
+    if is_button_signal:
+        # __click_confirm__ 且在等待计划确认时 → 进入 plan_confirmation（用户确认创建）
+        if user_input == "__click_confirm__" and state.get("waiting_for_plan_confirmation"):
+            return "plan_confirmation"
+        # __click_confirm__ 其他情况 → 进入 plan_generator（开启新计划）
+        if user_input == "__click_confirm__":
+            return "plan_generator"
+        # __click_reject__ 且在等待确认时 → 进入 plan_confirmation（用户拒绝）
+        if state.get("waiting_for_plan_confirmation") is True or state.get("plan_generated"):
+            return "plan_confirmation"
+
     selected = state.get("selected_agent", "chat")
     capabilities = state.get("capabilities", {})
 
@@ -282,37 +301,37 @@ def route_by_intent(state) -> str:
         enable_rag = getattr(capabilities, "enable_rag", True)
         enable_plan_mode = getattr(capabilities, "enable_plan_mode", True)
 
-    # 能力开关降级逻辑
+    # 能力开关降级：禁用计划模式时，plan_creation 降级为 chat
     if selected == "rag" and not enable_rag:
-        return "assistant"
+        return "chat"
 
     if selected == "plan_generator" and not enable_plan_mode:
-        return "assistant"
+        return "chat"
 
     # 计划模式确认直接路由
     if selected == "plan_mode_confirm":
         return "plan_mode_confirm"
-    
+
     # 计划确认直接路由到 plan_confirmation
     if selected == "plan_confirmation":
         return "plan_confirmation"
-    
-    # 学习/健康/旅行/工作/财务计划/计划创建都走plan_generator
-    if selected in ["learning", "health", "travel", "work", "finance", "plan_creation", "plan_generator"]:
+
+    # plan_creation 走计划生成流程（需启用计划模式）
+    if selected in ["plan_creation", "plan_generator"]:
         if enable_plan_mode:
             return "plan_generator"
         else:
-            return "assistant"
+            return "chat"
 
-    # 其他意图正常路由
-    if selected in ["assistant", "rag", "chat", "clarify"]:
+    # doc_query → 文档知识检索
+    if selected == "doc_query":
+        return "rag"
+
+    # chat / clarify 正常路由
+    if selected in ["rag", "chat", "clarify"]:
         return selected
 
-    # plan_builder 直接路由到 parameter_extractor
-    if selected == "plan_builder":
-        return "parameter_extractor"
-
-    # 默认降级到chat
+    # 默认降级到 chat
     return "chat"
 
 
@@ -368,15 +387,20 @@ def route_after_plan_writer(state) -> str:
     plan_writer 完成后的路由
 
     路由逻辑：
-    1. 计划生成成功（plan_generated=True）→ plan_confirmation
-    2. 生成失败（plan_generated=False）→ memory_save（回退）
+    1. 计划生成成功（plan_generated=True）→ plan_confirmation（展示文本计划，询问用户是否创建到平台）
+    2. 生成失败（plan_generated=False）→ memory_save（回注）
+
+    流程说明：
+    - plan_writer 只输出文本计划（流式），不生成 HTML
+    - 用户审阅文本计划后，点击确认按钮
+    - 确认后路由到 plan_html_writer 生成杂志风 HTML
     """
     plan_generated = state.get("plan_generated", False)
-    
+
     if plan_generated:
         print(f"[DEBUG] route_after_plan_writer: plan_generated=True, routing to plan_confirmation")
         return "plan_confirmation"
-    
+
     print(f"[DEBUG] route_after_plan_writer: plan_generated=False, routing to memory_save")
     return "memory_save"
 
@@ -386,19 +410,20 @@ def route_after_plan_confirmation(state) -> str:
     plan_confirmation 完成后的路由
 
     路由逻辑：
-    1. 用户确认创建（user_confirmed_create=True）→ extract_plan_title
+    1. 用户确认创建（user_confirmed_create=True）→ plan_html_writer（生成杂志风 HTML）
     2. 用户拒绝创建 → memory_save
     3. 继续等待确认（waiting_for_plan_confirmation=True）→ memory_save（等待下次对话）
     """
     user_confirmed = state.get("user_confirmed_create", False)
     waiting = state.get("waiting_for_plan_confirmation", False)
-    
+
     if user_confirmed:
-        return "extract_plan_title"
-    
+        print(f"[DEBUG] route_after_plan_confirmation: user confirmed, routing to plan_html_writer")
+        return "plan_html_writer"
+
     if waiting:
         return "memory_save"
-    
+
     return "memory_save"
 
 
@@ -431,9 +456,8 @@ def create_agent_graph():
     2. supervisor - 意图分类和路由决策
     3. agent节点 - 根据路由执行对应Agent
        - plan_generator: 计划生成 → plan_confirmation → extract_plan_title → create_plan_to_platform
-       - assistant: 通用工具调用
        - rag: 知识库查询
-       - chat: 闲聊
+       - chat: 闲聊/问答
     4. memory_save - 保存对话记录和状态到Redis
     5. END - 结束
     """
@@ -448,10 +472,10 @@ def create_agent_graph():
     workflow.add_node("tool_executor", tool_executor_node)
     workflow.add_node("doc_retriever", doc_retriever_node)
     workflow.add_node("plan_writer", plan_writer_node)
+    workflow.add_node("plan_html_writer", plan_html_writer_node)
     workflow.add_node("plan_confirmation", plan_confirmation_node)
     workflow.add_node("extract_plan_title", extract_plan_title_node)
     workflow.add_node("create_plan_to_platform", create_plan_to_platform_node)
-    workflow.add_node("assistant", assistant_node)
     workflow.add_node("rag", rag_node)
     workflow.add_node("chat", chat_node)
     workflow.add_node("memory_save", memory_save_node)
@@ -471,7 +495,7 @@ def create_agent_graph():
             "plan_generator": "plan_generator",
             "parameter_extractor": "parameter_extractor",
             "plan_confirmation": "plan_confirmation",
-            "assistant": "assistant",
+            "doc_query": "rag",
             "rag": "rag",
             "chat": "chat",
             "clarify": "chat",
@@ -517,15 +541,18 @@ def create_agent_graph():
         }
     )
 
-    # plan_confirmation → 条件路由（用户确认或拒绝）
+    # plan_confirmation → 条件路由（用户确认→HTML生成，拒绝→保存）
     workflow.add_conditional_edges(
         "plan_confirmation",
         route_after_plan_confirmation,
         {
-            "extract_plan_title": "extract_plan_title",
+            "plan_html_writer": "plan_html_writer",
             "memory_save": "memory_save",
         }
     )
+
+    # plan_html_writer → extract_plan_title（HTML 生成后继续提取标题）
+    workflow.add_edge("plan_html_writer", "extract_plan_title")
 
     # extract_plan_title → create_plan_to_platform
     workflow.add_edge("extract_plan_title", "create_plan_to_platform")
@@ -533,9 +560,6 @@ def create_agent_graph():
     # create_plan_to_platform → memory_save
     workflow.add_edge("create_plan_to_platform", "memory_save")
 
-    # 其他Agent执行完成后 → 保存记忆
-    workflow.add_edge("assistant", "memory_save")
-    
     # RAG → 条件路由（成功 → memory_save，失败 → chat fallback）
     workflow.add_conditional_edges(
         "rag",

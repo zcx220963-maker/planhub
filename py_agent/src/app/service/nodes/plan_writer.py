@@ -53,14 +53,11 @@ async def plan_writer_node(state) -> dict:
                 ]
             }
 
-        all_data_parts = list(tool_data_parts)
-        if doc_data_parts:
-            all_data_parts.append("【知识库参考】\n" + "\n\n".join(doc_data_parts))
-
         from datetime import datetime
         current_date = datetime.now().strftime("%Y-%m-%d")
 
-        tool_data_text = "\n\n".join(all_data_parts) if all_data_parts else "暂无外部数据"
+        # API 数据（必须引用）
+        tool_data_text = "\n\n".join(tool_data_parts) if tool_data_parts else ""
 
         system_prompt = PLAN_WRITER_SYSTEM_PROMPT
 
@@ -79,12 +76,24 @@ async def plan_writer_node(state) -> dict:
             st_text = "\n".join(st_lines)
             user_prompt_parts.append(f"【最近对话背景】\n{st_text}")
 
-        user_prompt_parts.append(f"【API 数据】\n{tool_data_text}")
+        # API 数据：有才给，没有就说无
+        if tool_data_text:
+            user_prompt_parts.append(f"【API 数据】\n{tool_data_text}\n（以上数据必须引用到计划中）")
+        else:
+            user_prompt_parts.append("【API 数据】\n暂无外部数据，仅根据用户需求生成计划")
+
+        # RAG 知识库：才有给，没有就不提
+        if doc_data_parts:
+            user_prompt_parts.append(f"【知识库参考】\n" + "\n\n".join(doc_data_parts) + "\n（以上内容相关则引用，不相关则忽略）")
+
         user_prompt_parts.append("请根据以上信息，生成一份完整的执行计划：")
 
         user_prompt = "\n\n".join(user_prompt_parts)
 
-        from ..stream_writer import emit_token, is_streaming
+        from ..stream_writer import emit_token, emit_streaming_complete, flush_buffer, emit_log, is_streaming
+        from src.app.common.llm_factory import extract_text
+
+        await emit_log("正在生成计划，请稍候...")
 
         llm = get_llm(temperature=0.7)
 
@@ -96,22 +105,27 @@ async def plan_writer_node(state) -> dict:
                 HumanMessage(content=user_prompt)
             ]):
                 content = chunk.content if hasattr(chunk, 'content') else str(chunk)
-                if content:
-                    plan_text += content
-                    emit_token(content)
+                text = extract_text(content) if content is not None else ""
+                if text:
+                    plan_text += text
+                    await emit_token(text)
+            # 强制 flush 缓冲区（发送剩余内容）
+            await flush_buffer()
             plan_text = plan_text.strip()
+            # LLM 流式生成结束，立即通知前端（不等待后续 post-processing）
+            await emit_streaming_complete()
         else:
             result = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt)
             ])
-            plan_text = result.content if hasattr(result, "content") else str(result)
+            plan_text = extract_text(result.content) if hasattr(result, "content") else str(result)
             plan_text = plan_text.strip()
 
         if not plan_text or len(plan_text) < 50:
             plan_text = _build_fallback_plan(plan_summary)
             if streaming:
-                emit_token("\n\n" + plan_text)
+                await emit_token("\n\n" + plan_text)
             print(f"[DEBUG] plan_writer: LLM 输出为空，使用兜底计划")
 
         plan_metadata = {
@@ -131,16 +145,23 @@ async def plan_writer_node(state) -> dict:
 
         print(f"[DEBUG] plan_writer: 计划生成完成，长度={len(plan_text)}")
 
+        # 注意：plan_writer 输出纯文本计划供用户审阅，不输出 HTML
+        # HTML 生成由 plan_html_writer 节点负责，在用户确认后才执行
+        # agent_output 只显示简短提示，完整计划通过 plan_confirmation 节点展示
+
         return {
             "plan_text_cache": plan_text,
             "plan_generated": True,
+            "agent_output": "计划文本已生成，请审阅后点击确认按钮。",
             "plan_metadata": plan_metadata,
+            "preview_url": None,  # 由 plan_html_writer 生成
+            "plan_id": None,     # 由 plan_html_writer 持久化
             "execution_trace": [
                 {
                     "node": "plan_writer",
                     "status": "success",
                     "plan_length": len(plan_text),
-                    "data_sources_count": len(all_data_parts),
+                    "data_sources_count": len(tool_data_parts),
                     "short_term_used": len(short_term_memory) > 0,
                     "long_term_used": len(long_term_memory) > 0,
                     "success": True

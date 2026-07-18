@@ -10,7 +10,7 @@ from typing import Literal
 class IntentResult(BaseModel):
     """意图分类结果 - Supervisor的结构化输出"""
     intent: Literal[
-        "plan_creation", "assistant", "chat", "clarify"
+        "plan_creation", "doc_query", "chat", "clarify"
     ] = Field(description="用户意图类别")
     confidence: float = Field(ge=0, le=1, description="置信度")
 

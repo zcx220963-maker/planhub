@@ -618,6 +618,23 @@ public class AIController {
                 .body(emitter);
     }
 
+    /**
+     * LangGraph 编排 — WebSocket 实时流式通信
+     *
+     * 前端通过 WebSocket 连接到 Java 后端，Java 再通过 WebSocket 转发到 Python AI 服务。
+     * 协议：
+     * - 前端发送 JSON: {"message": "...", "session_id": "...", ...}
+     * - 后端转发 JSON: {"type": "token"|"node_complete"|"done"|"error", ...}
+     */
+    @PostMapping("/orchestrator/ws/chat")
+    public ResponseEntity<Map<String, Object>> orchestrateWsInfo(HttpServletRequest request) {
+        Map<String, Object> info = new HashMap<>();
+        info.put("websocket_url", "/ws/ai/orchestrator/chat");
+        info.put("protocol", "WebSocket JSON");
+        info.put("events", List.of("token", "node_complete", "done", "error"));
+        return ResponseEntity.ok(info);
+    }
+
     @GetMapping("/orchestrator/health")
     public ResponseEntity<Map<String, Object>> orchestratorHealth(HttpServletRequest request) {
         return forwardGet("/orchestrator/health", null, request);

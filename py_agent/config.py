@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     # 改为 false，使用本地 qwen3:1.7b（支持 Tool Calling）
     USE_DASHSCOPE: str = os.getenv("USE_DASHSCOPE", "false")
 
+    # ── LongCat / Anthropic 兼容 API（结构化输出最稳定，推荐）─
+    ANTHROPIC_AUTH_TOKEN: str = os.getenv("ANTHROPIC_AUTH_TOKEN", "")
+    ANTHROPIC_BASE_URL: str = os.getenv("ANTHROPIC_BASE_URL", "https://api.longcat.chat/anthropic")
+    ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "LongCat-2.0")
+
     # 本地 Ollama（对话机器人 & RAG 默认使用此模型）
     OLLAMA_API_URL: str = os.getenv("OLLAMA_API_URL", "http://localhost:11434")
     OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
@@ -58,6 +63,12 @@ class Settings(BaseSettings):
     AI_INTERNAL_SECRET_HEADER: str = os.getenv(
         "AI_INTERNAL_SECRET_HEADER", "X-Internal-Api-Secret"
     )
+    # 独立模式：关闭内部鉴权，前端直连（服务仅监听 127.0.0.1，安全可控）
+    STANDALONE_MODE: str = os.getenv("STANDALONE_MODE", "false")
+    # 额外允许的 CORS 来源（逗号分隔），例如 "http://192.168.1.100:5173"
+    ALLOWED_ORIGINS_EXTRA: list = [
+        o.strip() for o in os.getenv("ALLOWED_ORIGINS_EXTRA", "").split(",") if o.strip()
+    ]
 
     # ── 外部 API 配置 ──────────────────────────────────────
     # OpenWeatherMap - 天气 API
@@ -81,6 +92,13 @@ class Settings(BaseSettings):
     # JokeAPI - 笑话查询（免费，无需 key）
     JOKE_API_URL: str = "https://v2.jokeapi.dev/joke"
 
+    # ── MCP 配置 ─────────────────────────────────────────────
+    MCP_SERVER_URL: str = os.getenv("MCP_SERVER_URL", "http://127.0.0.1:8001/sse")
+    MCP_SERVER_HOST: str = os.getenv("MCP_SERVER_HOST", "127.0.0.1")
+    MCP_SERVER_PORT: int = int(os.getenv("MCP_SERVER_PORT", "8001"))
+    # 是否自动启动 MCP server（ standalone 模式下自动启动）
+    MCP_AUTO_START: str = os.getenv("MCP_AUTO_START", "true")
+
     @property
     def use_redis_bool(self):
         return str(self.USE_REDIS).lower() in ("true", "1", "yes", "t", "y")
@@ -88,6 +106,10 @@ class Settings(BaseSettings):
     @property
     def use_dashscope_bool(self):
         return str(self.USE_DASHSCOPE).lower() in ("true", "1", "yes", "t", "y")
+
+    @property
+    def standalone_mode_bool(self):
+        return str(self.STANDALONE_MODE).lower() in ("true", "1", "yes", "t", "y")
 
     model_config: ClassVar = {
         "env_file": ".env",

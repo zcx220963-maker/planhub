@@ -75,14 +75,38 @@ async def plan_confirmation_node(state) -> dict:
                 ]
             }
         
-        # 用户拒绝创建（仅按钮点击）
+        # 用户拒绝创建（仅按钮点击）—— 清掉所有计划流程字段，下次对话从头开始
         elif user_input.strip() == "__click_reject__":
             return {
                 "final_response": "已取消计划创建，您可以重新发起新的计划需求。",
                 "agent_output": "已取消计划创建，您可以重新发起新的计划需求。",
-                "plan_text_cache": None,
+                # —— 计划流程标志位全部清零 ——
+                "plan_flow_cancelled": True,
+                "waiting_for_plan_mode_confirm": False,
                 "waiting_for_plan_confirmation": False,
+                "user_confirmed_create": False,
                 "plan_generated": False,
+                "needs_plan_building": False,
+                # —— 计划数据全部清零（下次靠 memory_load 重新注入记忆） ——
+                "plan_text_cache": None,
+                "plan_title": None,
+                "plan_type": None,
+                "plan_info": None,
+                "plan_summary": None,
+                "plan_conversation_history": [],
+                "original_user_input": None,
+                "chat_override_input": None,
+                # —— 三阶段计划生成的中间数据清零 ——
+                "ranked_tools": [],
+                "parameter_extraction_status": "",
+                "tool_call_results": [],
+                "tool_data_parts": [],
+                "tool_success_count": 0,
+                "tool_total_count": 0,
+                "tool_fail_log": [],
+                "plan_metadata": None,
+                "doc_data_parts": [],
+                "doc_retrieval_status": "",
                 "execution_trace": [
                     {
                         "node": "plan_confirmation",
@@ -97,12 +121,34 @@ async def plan_confirmation_node(state) -> dict:
             # 检查用户输入是否是新的意图（长度较长或包含问号）
             # 如果用户输入明显不是确认/拒绝，清除等待确认状态
             if len(user_input) > 10 or "?" in user_input or "？" in user_input or "谁" in user_input or "什么" in user_input or "怎么" in user_input:
-                # 用户可能在问其他问题，取消等待确认状态
+                # 用户可能在问其他问题，取消整个计划流程，清掉所有计划字段
                 return {
                     "final_response": f"好的，已取消计划创建。您可以在之后随时重新创建。\n\n请问有什么其他需要帮助的吗？",
                     "agent_output": f"好的，已取消计划创建。请问有什么其他需要帮助的吗？",
-                    "waiting_for_plan_confirmation": False,  # 清除等待确认状态
-                    "plan_text_cache": None,  # 清除缓存
+                    "plan_flow_cancelled": True,
+                    "waiting_for_plan_mode_confirm": False,
+                    "waiting_for_plan_confirmation": False,
+                    "user_confirmed_create": False,
+                    "plan_generated": False,
+                    "needs_plan_building": False,
+                    "plan_text_cache": None,
+                    "plan_title": None,
+                    "plan_type": None,
+                    "plan_info": None,
+                    "plan_summary": None,
+                    "plan_conversation_history": [],
+                    "original_user_input": None,
+                    "chat_override_input": None,
+                    "ranked_tools": [],
+                    "parameter_extraction_status": "",
+                    "tool_call_results": [],
+                    "tool_data_parts": [],
+                    "tool_success_count": 0,
+                    "tool_total_count": 0,
+                    "tool_fail_log": [],
+                    "plan_metadata": None,
+                    "doc_data_parts": [],
+                    "doc_retrieval_status": "",
                     "execution_trace": [
                         {
                             "node": "plan_confirmation",

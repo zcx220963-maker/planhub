@@ -59,6 +59,10 @@ async def doc_retriever_node(state) -> dict:
 
         # 步骤 1: 双路召回（向量 + BM25）
         from src.app.api.rag import hybrid_search, llm_rerank
+        from ..stream_writer import emit_log
+
+        if selected_doc_ids:
+            await emit_log(f"正在从 {len(selected_doc_ids)} 篇文档中检索相关知识...")
 
         docs, retrieval_info = hybrid_search(
             query=plan_summary,
@@ -69,6 +73,8 @@ async def doc_retriever_node(state) -> dict:
         )
 
         print(f"[DEBUG] doc_retriever: 双路召回 {len(docs)} 个候选")
+        if docs:
+            await emit_log(f"检索到 {len(docs)} 篇相关文档")
 
         # 步骤 2: LLM Rerank 精排（如果候选数 > 5）
         rerank_info = {}

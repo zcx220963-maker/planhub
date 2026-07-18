@@ -5,6 +5,7 @@ Plan Generator节点 - 计划信息收集器
 
 import re
 from prompts.plan_generator import PLAN_GENERATOR_SYSTEM_PROMPT
+from src.app.common.llm_factory import extract_text
 
 MAX_COLLECT_ROUNDS = 10
 
@@ -170,7 +171,7 @@ async def plan_generator_node(state) -> dict:
 
         llm = get_llm(temperature=0.7)
         result = llm.invoke(messages)
-        response_text = result.content if hasattr(result, 'content') else str(result)
+        response_text = extract_text(result.content) if hasattr(result, 'content') else str(result)
         llm_raw_response = response_text.strip()
 
         print(f"[DEBUG] plan_generator: raw_response = {llm_raw_response[:200]}")

@@ -10,6 +10,7 @@ import com.planhub.entity.Plan;
 import com.planhub.entity.PlanCheckin;
 import com.planhub.entity.User;
 import com.planhub.mapper.UserMapper;
+import com.planhub.notification.NotificationDispatcher;
 import com.planhub.service.PlanService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ import java.util.stream.Collectors;
 public class PlanController {
     private final PlanService planService;
     private final UserMapper userMapper;
+    private final NotificationDispatcher notificationDispatcher;
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<Plan>>> getPlans(
@@ -171,6 +173,23 @@ public class PlanController {
         }
         Long userId = (Long) authentication.getPrincipal();
         Plan plan = planService.create(userId, request);
+
+        // 创建成功后推送通知到飞书和邮件
+        try {
+            String title = "🎉 新计划《" + plan.getTitle() + "》已创建";
+            String content = String.format(
+                    "👤 创建者：%s%n📅 开始日期：%s%n🎯 目标日期：%s%n📝 计划描述：%s",
+                    plan.getUser() != null ? plan.getUser().getDisplayName() : "你",
+                    plan.getStartDate() != null ? plan.getStartDate() : "未设置",
+                    plan.getTargetDate() != null ? plan.getTargetDate() : "未设置",
+                    plan.getDescription() != null ? plan.getDescription().substring(0, Math.min(100, plan.getDescription().length())) : ""
+            );
+            notificationDispatcher.dispatchAll(title, content);
+        } catch (Exception e) {
+            // 通知失败不影响创建流程
+            System.err.println("[通知] 发送失败（不影响计划创建）: " + e.getMessage());
+        }
+
         return ResponseEntity.ok(ApiResponse.success(plan, "计划创建成功"));
     }
 
