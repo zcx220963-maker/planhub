@@ -188,9 +188,9 @@ def get_or_create_user_vector_store(user_id: str):
         return store
 
 
-def init_document_indices(user_id: str = "default"):
+async def init_document_indices(user_id: str = "default"):
     """
-    从 ./original_docs/{user_id}/ 磁盘目录重建文档索引
+    从 MySQL rag_documents 表重建文档索引（BM25 内存索引 + user_documents 元数据）
 
     每次 Python 服务重启都会调用，确保重启后：
     - 指定文档查询（doc_ids）可用
@@ -198,7 +198,7 @@ def init_document_indices(user_id: str = "default"):
     - 文档列表/预览接口始终有内容
 
     Args:
-        user_id: 用户ID，每个用户有独立的文档目录
+        user_id: 用户ID，每个用户有独立的文档空间
     """
     global original_documents, bm25_index, bm25_total_docs, bm25_avg_length
 
@@ -217,13 +217,14 @@ def init_document_indices(user_id: str = "default"):
     bm25_total_docs = bm25_stats["total_docs"]
     bm25_avg_length = bm25_stats["avg_length"]
 
-    docs_dir = os.path.join("./original_docs", user_id)
-    if not os.path.exists(docs_dir):
-        os.makedirs(docs_dir, exist_ok=True)
-        return 0
+    try:
+        from ..service.document_store import get_documents_by_user
+        docs = await get_documents_by_user(user_id)
+    except Exception as e:
+        print(f"[WARN] 加载 MySQL 文档失败 (user_id={user_id}): {e}")
+        docs = []
 
-    files = [f for f in os.listdir(docs_dir) if f.endswith(".txt")]
-    if not files:
+    if not docs:
         return 0
 
     text_splitter = RecursiveCharacterTextSplitter(
@@ -232,19 +233,18 @@ def init_document_indices(user_id: str = "default"):
     )
 
     loaded = 0
-    for filename in files:
+    for doc in docs:
         try:
-            doc_id = filename.replace(".txt", "")
-            doc_path = os.path.join(docs_dir, filename)
-            with open(doc_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                lines = content.split("\n")
-                filename_in_doc = lines[0].replace("===", "").strip() if lines else filename
+            doc_id = doc["doc_id"]
+            filename_in_doc = doc["filename"]
+            actual_content = doc.get("full_content") or doc.get("content", "")
+            # 去掉旧磁盘格式残留的前 2 行（"=== filename ===" 标题行）
+            if actual_content.startswith("==="):
+                lines = actual_content.split("\n")
                 actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
-                if not actual_content.strip():
-                    continue
-            doc = Document(page_content=actual_content, metadata={"source": filename_in_doc})
-            split_docs = text_splitter.split_documents([doc])
+            if not actual_content.strip():
+                continue
+            split_docs = text_splitter.split_documents([Document(page_content=actual_content, metadata={"source": filename_in_doc})])
             split_docs = [d for d in split_docs if d.page_content and d.page_content.strip()]
             if not split_docs:
                 continue
@@ -254,19 +254,19 @@ def init_document_indices(user_id: str = "default"):
             original_documents[doc_id] = {
                 "filename": filename_in_doc,
                 "chunks": chunks_meta,
-                "upload_time": str(datetime.now()),
+                "upload_time": str(doc.get("created_at", datetime.now())),
                 "content": actual_content,
             }
             loaded += 1
         except Exception as e:
-            print(f"[WARN] 重建索引时读取文档 {filename} 失败: {e}")
+            print(f"[WARN] 重建索引时处理文档 {doc.get('doc_id', '?')} 失败: {e}")
 
     # 更新统计
     bm25_stats["total_docs"] = len(bm25_index)
     bm25_stats["avg_length"] = bm25_avg_length
     bm25_total_docs = bm25_stats["total_docs"]
 
-    print(f"[INFO] 文档索引重建完成: user_id={user_id}, 共 {loaded} 个文档, BM25 片段数: {bm25_total_docs}")
+    print(f"[INFO] 文档索引重建完成 (MySQL): user_id={user_id}, 共 {loaded} 个文档, BM25 片段数: {bm25_total_docs}")
     return loaded
 
 
@@ -450,50 +450,6 @@ def _persist_bm25_to_mysql(doc_id: str, chunk_index: int, tf: dict,
     except Exception as e:
         # 任何异常都不影响主流程
         pass
-
-
-def _record_documents_to_mysql(doc_records: list, user_id: str = "default"):
-    """
-    上传成功后，将文档元数据写入 MySQL
-
-    Args:
-        doc_records: 文档记录列表
-            每个 doc_record 格式：{"doc_id": "abc12345", "filename": "xxx.pdf", "chunk_count": 5}
-        user_id: 用户ID（写入 rag_documents 表的 user_id 字段）
-    """
-    try:
-        import requests as req
-        from config import settings
-
-        secret = getattr(settings, "AI_INTERNAL_SECRET", None)
-        if not secret:
-            print("[WARN] AI_INTERNAL_SECRET 未配置，跳过 MySQL 记录")
-            return
-
-        url = f"{settings.PLANHUB_API_BASE}/rag-v2/documents/record"
-        headers = {
-            "X-Internal-Api-Secret": secret,
-            "X-User-Id": str(user_id),
-            "Content-Type": "application/json",
-        }
-
-        for record in doc_records:
-            try:
-                payload = {
-                    "doc_id": record["doc_id"],
-                    "filename": record["filename"],
-                    "chunk_count": record["chunk_count"],
-                }
-                resp = req.post(url, json=payload, headers=headers, timeout=5)
-                if resp.status_code == 200:
-                    print(f"[INFO] MySQL 记录文档成功: user_id={user_id}, {record['filename']} -> {record['doc_id']}")
-                else:
-                    print(f"[WARN] MySQL 记录失败: {record['filename']}, status={resp.status_code}")
-            except Exception as e:
-                print(f"[WARN] MySQL 记录异常: {record['filename']}: {e}")
-
-    except Exception as e:
-        print(f"[ERROR] _record_documents_to_mysql failed: {e}")
 
 
 def bm25_search(query: str, top_n: int = 20, doc_ids: Optional[List[str]] = None, user_id: str = "default") -> List[Document]:
@@ -1359,19 +1315,21 @@ async def process_uploaded_files(files: list[UploadFile], user_id: str = "defaul
                     d.metadata["total_chunks"] = len(split_docs)
                     d.metadata["user_id"] = user_id  # 记录所属用户
 
-                # 磁盘保存（按用户ID隔离目录）
-                docs_dir = os.path.join("./original_docs", user_id)
-                os.makedirs(docs_dir, exist_ok=True)
-                doc_file = os.path.join(docs_dir, f"{doc_id}.txt")
-                with open(doc_file, "w", encoding="utf-8") as f:
-                    f.write(f"=== {file.filename} ===\n\n")
-                    f.write(original_content)
+                # MySQL 保存（替代原来的磁盘文件系统）
+                from ..service.document_store import save_document
+                await save_document(
+                    doc_id=doc_id,
+                    user_id=user_id,
+                    filename=file.filename,
+                    content=original_content,
+                    chunk_count=len(split_docs),
+                )
 
                 all_split_docs.extend(split_docs)
                 processed_count += 1
                 os.remove(file_path)
 
-                # 记录文档信息（供 Java 端写 MySQL）
+                # 记录文档信息（供返回给前端）
                 uploaded_doc_records.append({
                     "doc_id": doc_id,
                     "filename": file.filename,
@@ -1404,9 +1362,7 @@ async def process_uploaded_files(files: list[UploadFile], user_id: str = "defaul
         if failed_files:
             message += f"。失败 {len(failed_files)} 个文件: {', '.join(failed_files)}"
 
-        # 上传成功后，同步写 MySQL（让 Java 记录文档元数据，需传 user_id 确保归属正确）
-        _record_documents_to_mysql(uploaded_doc_records, user_id=user_id)
-
+        # 文档内容已在 process_uploaded_files 中同步写入 MySQL (rag_documents 表)
         return DocumentUploadResponse(
             success=True,
             message=message,
@@ -1497,15 +1453,14 @@ async def clear_knowledge_base(user_id: str = "default"):
         if user_id in user_documents:
             user_documents[user_id].clear()
 
-        # 4. 清空该用户的磁盘文档
-        docs_dir = os.path.join("./original_docs", user_id)
-        if os.path.exists(docs_dir):
-            for f in os.listdir(docs_dir):
-                fp = os.path.join(docs_dir, f)
-                if os.path.isfile(fp):
-                    os.remove(fp)
+        # 4. 清空该用户的 MySQL 文档记录
+        from ..service.document_store import delete_document
+        from ..service.document_store import get_documents_by_user
+        user_docs_list = await get_documents_by_user(user_id)
+        for d in user_docs_list:
+            await delete_document(d["doc_id"], user_id)
 
-        return {"success": True, "message": f"用户 {user_id} 的知识库已清空"}
+        return {"success": True, "message": f"用户 {user_id} 的知识库已清空（Chroma + BM25 + MySQL）"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1568,16 +1523,9 @@ async def internal_delete_document(doc_id: str, user_id: str = "default"):
         if stats["total_docs"] == 0:
             stats["avg_length"] = 0.0
 
-    # 3. 删磁盘文件（在该用户的隔离目录下）
-    docs_dir = os.path.join("./original_docs", user_id)
-    for ext in [".txt", ".md", ""]:
-        doc_path = os.path.join(docs_dir, f"{doc_id}{ext}")
-        if os.path.exists(doc_path):
-            try:
-                os.remove(doc_path)
-                deleted_disk = True
-            except Exception as e:
-                print(f"[WARN] [Internal] 删磁盘文件失败: {e}")
+    # 3. 删 MySQL 记录
+    from ..service.document_store import delete_document
+    deleted_mysql = await delete_document(doc_id, user_id)
 
     # 4. 删内存 user_documents
     user_docs = user_documents.get(user_id, {})
@@ -1585,7 +1533,7 @@ async def internal_delete_document(doc_id: str, user_id: str = "default"):
         del user_docs[doc_id]
 
     print(f"[INFO] [Internal Delete] doc_id={doc_id}, user_id={user_id}: "
-          f"chroma={deleted_chroma}, bm25={deleted_bm25}, disk={deleted_disk}")
+          f"chroma={deleted_chroma}, bm25={deleted_bm25}, mysql={deleted_mysql}")
 
     return {
         "success": True,
@@ -1594,7 +1542,7 @@ async def internal_delete_document(doc_id: str, user_id: str = "default"):
         "details": {
             "chroma_cleared": deleted_chroma > 0,
             "bm25_chunks_deleted": deleted_bm25,
-            "disk_file_deleted": deleted_disk
+            "mysql_deleted": deleted_mysql
         }
     }
 
@@ -1622,38 +1570,28 @@ async def internal_get_document(doc_id: str, user_id: str = "default"):
 @router.get("/documents")
 async def get_documents(user_id: str = "default"):
     """
-    获取当前用户的文档列表（按用户ID隔离）
+    获取当前用户的文档列表（按用户ID隔离，从 MySQL 读取）
 
     Args:
         user_id: 用户ID，只返回该用户的文档
     """
     try:
-        docs_dir = os.path.join("./original_docs", user_id)
-        os.makedirs(docs_dir, exist_ok=True)
-        documents = []
-        for filename in os.listdir(docs_dir):
-            if filename.endswith(".txt"):
-                doc_path = os.path.join(docs_dir, filename)
-                doc_id = filename.replace(".txt", "")
-                try:
-                    with open(doc_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                        lines = content.split("\n")
-                        filename_in_doc = lines[0].replace("===", "").strip() if lines else filename
-                        actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
-                        preview = actual_content[:500] + ("..." if len(actual_content) > 500 else "")
-                        documents.append({
-                            "id": doc_id,
-                            "name": filename_in_doc,
-                            "content": preview,
-                            "full_content": actual_content,
-                            "length": len(actual_content),
-                            "user_id": user_id,
-                        })
-                except Exception as e:
-                    print(f"[WARN] 读取文档 {filename} 失败: {e}")
-        documents.sort(key=lambda x: x.get("name", ""), reverse=True)
-        return {"documents": documents, "total": len(documents), "user_id": user_id}
+        from ..service.document_store import get_documents_by_user
+        documents = await get_documents_by_user(user_id)
+        # 适配前端期望的字段名 (id / name / content / full_content / length / user_id)
+        adapted = []
+        for d in documents:
+            adapted.append({
+                "id": d["doc_id"],
+                "name": d["filename"],
+                "content": d.get("content", ""),
+                "full_content": d.get("full_content", ""),
+                "length": d.get("length", 0),
+                "user_id": d.get("user_id", user_id),
+                "chunk_count": d.get("chunk_count", 0),
+                "created_at": str(d.get("created_at", "")),
+            })
+        return {"documents": adapted, "total": len(adapted), "user_id": user_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1673,12 +1611,9 @@ async def delete_document(doc_id: str, user_id: str = "default"):
         user_docs = user_documents.get(user_id, {})
         stats = user_bm25_stats.get(user_id, {"total_docs": 0, "avg_length": 0.0})
 
-        docs_dir = os.path.join("./original_docs", user_id)
-        doc_path = os.path.join(docs_dir, f"{doc_id}.txt")
-
         deleted_from_chroma = 0
         deleted_from_bm25 = 0
-        deleted_from_disk = False
+        deleted_from_mysql = False
 
         # 1. 删该用户独立 Chroma 向量库中的文档
         store = get_or_create_user_vector_store(user_id)
@@ -1714,25 +1649,24 @@ async def delete_document(doc_id: str, user_id: str = "default"):
         bm25_avg_length = stats["avg_length"]
         original_documents = user_docs
 
-        # 3. 删磁盘文件（可选，允许不存在）
-        if os.path.exists(doc_path):
-            os.remove(doc_path)
-            deleted_from_disk = True
+        # 3. 删 MySQL 中的文档记录
+        from ..service.document_store import delete_document
+        deleted_from_mysql = await delete_document(doc_id, user_id)
 
         # 4. 删内存 user_documents
         if doc_id in user_docs:
             del user_docs[doc_id]
 
         print(f"[INFO] 删除文档 {doc_id} 完成: user_id={user_id}, "
-              f"Chroma={deleted_from_chroma}, BM25={deleted_from_bm25}, 磁盘={deleted_from_disk}")
+              f"Chroma={deleted_from_chroma}, BM25={deleted_from_bm25}, MySQL={deleted_from_mysql}")
 
         return {
             "success": True,
-            "message": "文档已删除（Chroma + BM25 + 磁盘 全部清理）",
+            "message": "文档已删除（Chroma + BM25 + MySQL 全部清理）",
             "details": {
                 "chroma_cleared": deleted_from_chroma > 0,
                 "bm25_chunks_deleted": deleted_from_bm25,
-                "disk_file_deleted": deleted_from_disk
+                "mysql_deleted": deleted_from_mysql
             }
         }
     except HTTPException:
@@ -1753,19 +1687,14 @@ async def reindex_documents(user_id: str = "default"):
         user_id: 用户ID，只重新索引该用户的文档
     """
     try:
-        docs_dir = os.path.join("./original_docs", user_id)
-        if not os.path.exists(docs_dir):
-            raise HTTPException(status_code=404, detail="没有找到已保存的原始文档")
-
-        files = [f for f in os.listdir(docs_dir) if f.endswith(".txt")]
-        if not files:
-            raise HTTPException(status_code=404, detail="原始文档目录为空")
+        from ..service.document_store import get_documents_by_user
+        docs = await get_documents_by_user(user_id)
+        if not docs:
+            raise HTTPException(status_code=404, detail="MySQL 中没有该用户的文档")
 
         # 重新构建该用户的 BM25 索引 + 内存索引
-        if user_id not in user_bm25_index:
-            user_bm25_index[user_id] = {}
-        if user_id not in user_documents:
-            user_documents[user_id] = {}
+        user_bm25_index[user_id] = {}
+        user_documents[user_id] = {}
 
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=500, chunk_overlap=50,
@@ -1774,19 +1703,18 @@ async def reindex_documents(user_id: str = "default"):
 
         total_chunks = 0
         all_docs = []
-        for filename in files:
-            doc_path = os.path.join(docs_dir, filename)
-            doc_id = filename.replace(".txt", "")
-            with open(doc_path, "r", encoding="utf-8") as f:
-                content = f.read()
-                lines = content.split("\n")
-                filename_in_doc = lines[0].replace("===", "").strip() if lines else filename
+        for doc in docs:
+            doc_id = doc["doc_id"]
+            filename_in_doc = doc["filename"]
+            actual_content = doc.get("full_content") or doc.get("content", "")
+            # 去掉旧磁盘格式残留
+            if actual_content.startswith("==="):
+                lines = actual_content.split("\n")
                 actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
-                if not actual_content.strip():
-                    continue
+            if not actual_content.strip():
+                continue
 
-            doc = Document(page_content=actual_content, metadata={"source": filename_in_doc})
-            split_docs = text_splitter.split_documents([doc])
+            split_docs = text_splitter.split_documents([Document(page_content=actual_content, metadata={"source": filename_in_doc})])
             split_docs = [d for d in split_docs if d.page_content and d.page_content.strip()]
             for i, d in enumerate(split_docs):
                 d.metadata["doc_id"] = doc_id
@@ -1802,7 +1730,7 @@ async def reindex_documents(user_id: str = "default"):
             user_documents[user_id][doc_id] = {
                 "filename": filename_in_doc,
                 "chunks": chunks_meta,
-                "upload_time": str(datetime.now()),
+                "upload_time": str(doc.get("created_at", datetime.now())),
                 "content": actual_content,
             }
 
@@ -1818,8 +1746,8 @@ async def reindex_documents(user_id: str = "default"):
         return {
             "success": True,
             "user_id": user_id,
-            "message": f"成功重新索引 {len(files)} 个文档，共 {total_chunks} 个片段",
-            "documents_count": len(files),
+            "message": f"成功重新索引 {len(docs)} 个文档，共 {total_chunks} 个片段",
+            "documents_count": len(docs),
             "chunks_count": total_chunks,
         }
 
@@ -1834,18 +1762,20 @@ async def reindex_documents(user_id: str = "default"):
 
 @router.get("/document/{doc_id}")
 async def get_document_preview(doc_id: str, user_id: str = "default"):
-    """获取文档预览（按用户ID隔离）"""
+    """获取文档预览（按用户ID隔离，从 MySQL 读取）"""
     try:
-        docs_dir = os.path.join("./original_docs", user_id)
-        doc_path = os.path.join(docs_dir, f"{doc_id}.txt")
-        if not os.path.exists(doc_path):
+        from ..service.document_store import get_document
+        doc = await get_document(doc_id, user_id)
+        if not doc:
             raise HTTPException(status_code=404, detail="文档不存在")
-        with open(doc_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            lines = content.split("\n")
-            filename = lines[0].replace("===", "").strip() if lines else doc_id
-            actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
-            return {"id": doc_id, "name": filename, "content": actual_content, "length": len(actual_content)}
+        return {
+            "id": doc["doc_id"],
+            "name": doc["filename"],
+            "content": doc["content"],
+            "length": doc.get("length", len(doc["content"])),
+            "chunk_count": doc.get("chunk_count", 0),
+            "created_at": str(doc.get("created_at", "")),
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -1956,68 +1886,42 @@ def load_doc_file(file_path: str):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 12. 启动初始化
+# 12. 启动初始化（从 MySQL 加载文档索引）
 # ══════════════════════════════════════════════════════════════════════════════
 
-try:
-    # 启动时从磁盘加载所有用户的原始文档到各自的内存索引
+async def startup_load_indexes_from_mysql():
+    """
+    启动时从 MySQL rag_documents 表加载所有用户的文档，
+    重建 BM25 内存索引（幂等：重复调用会先清空再重建）。
+
+    由 FastAPI lifespan 在启动时 await 调用。
+    """
     import uuid as _uuid
-    base_docs_dir = "./original_docs"
-    if os.path.exists(base_docs_dir):
-        # 遍历所有用户子目录
-        for uid_entry in os.listdir(base_docs_dir):
-            user_dir = os.path.join(base_docs_dir, uid_entry)
-            if not os.path.isdir(user_dir):
-                # 兼容旧版本：根目录下的 .txt 文件归入 "default" 用户
-                if uid_entry.endswith(".txt"):
-                    uid = "default"
-                    user_dir = base_docs_dir
-                else:
-                    continue
-            else:
-                uid = uid_entry
+    from ..service.document_store import get_all_documents, init_document_store
 
-            # 确保该用户的索引空间存在
-            init_document_indices(uid)
+    # 确保表存在
+    await init_document_store()
 
-            try:
-                files = [f for f in os.listdir(user_dir) if f.endswith(".txt")]
-                for filename in files:
-                    doc_id = filename.replace(".txt", "")
-                    # 跳过已加载的文档（避免重启时重复加载）
-                    if uid in user_documents and doc_id in user_documents[uid]:
-                        continue
-                    doc_path = os.path.join(user_dir, filename)
-                    try:
-                        with open(doc_path, "r", encoding="utf-8") as f:
-                            content = f.read()
-                        lines = content.split("\n")
-                        fname = lines[0].replace("===", "").strip() if lines else filename
-                        actual_content = "\n".join(lines[2:]) if len(lines) > 2 else ""
-                        if actual_content.strip():
-                            tsplitter = RecursiveCharacterTextSplitter(
-                                chunk_size=500, chunk_overlap=50,
-                                separators=["\n\n", "\n", "(?<=[。！？!?；;])", ",", " ", ""]
-                            )
-                            doc = Document(page_content=actual_content)
-                            chunks = tsplitter.split_documents([doc])
-                            for i, c in enumerate(chunks):
-                                add_doc_to_bm25(doc_id, fname, i, c.page_content, user_id=uid)
-                            user_documents[uid][doc_id] = {
-                                "filename": fname,
-                                "chunks": [{"content": c.page_content, "chunk_index": i, "total_chunks": len(chunks)}
-                                           for i, c in enumerate(chunks)],
-                                "upload_time": str(datetime.now()),
-                                "content": actual_content,
-                            }
-                    except Exception as e:
-                        print(f"[WARN] 启动时加载文档 {uid}/{filename} 失败: {e}")
-            except Exception as e:
-                print(f"[WARN] 启动时扫描用户目录 {uid} 失败: {e}")
+    all_docs = await get_all_documents()
+    if not all_docs:
+        print("[INFO] MySQL 中无文档，跳过索引加载")
+        return
+
+    # 按 user_id 分组
+    by_user: dict = {}
+    for d in all_docs:
+        uid = d.get("user_id", "default")
+        by_user.setdefault(uid, []).append(d)
+
+    for uid, docs in by_user.items():
+        # 清空该用户旧的内存索引，避免重复
+        user_documents[uid] = {}
+        user_bm25_index[uid] = {}
+        user_bm25_stats[uid] = {"total_docs": 0, "avg_length": 0.0}
+        await init_document_indices(uid)
+        print(f"[INFO] 用户 {uid}: 从 MySQL 加载了 {len(docs)} 个文档")
 
     # 初始化默认用户的向量库（供 qa_chain 使用）
     init_qa_chain()
     total_bm25 = sum(len(v) for v in user_bm25_index.values())
-    print(f"[INFO] RAG 知识库初始化成功, 用户数: {len(user_documents)}, BM25 总片段数: {total_bm25}")
-except Exception as e:
-    print(f"[ERROR] RAG 知识库初始化失败: {e}")
+    print(f"[INFO] RAG 知识库初始化成功 (MySQL), 用户数: {len(user_documents)}, BM25 总片段数: {total_bm25}")

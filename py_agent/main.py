@@ -111,12 +111,12 @@ async def lifespan(app: FastAPI):
         init_redis()
         print("[INFO] Redis 初始化完成")
 
-    # 2. RAG 索引
+    # 2. RAG 索引（从 MySQL 加载文档，重建 BM25 内存索引）
     try:
-        from src.app.api.rag import init_document_indices, init_vector_store
+        from src.app.api.rag import startup_load_indexes_from_mysql, init_vector_store
         init_vector_store()
-        init_document_indices()
-        print("[INFO] RAG 索引初始化完成")
+        await startup_load_indexes_from_mysql()
+        print("[INFO] RAG 索引初始化完成 (MySQL)")
     except Exception as e:
         print(f"[WARN] RAG 初始化失败: {e}")
 

@@ -11,49 +11,7 @@ import asyncio
 from datetime import datetime, date
 from typing import Optional, Dict, Any, List
 
-import aiomysql
-from config import settings
-
-# ── MySQL 连接配置 ──────────────────────────────────────────
-DB_HOST = settings.DB_HOST
-DB_PORT = settings.DB_PORT
-DB_USER = settings.DB_USER
-DB_PASSWORD = settings.DB_PASSWORD
-DB_NAME = settings.DB_NAME
-
-# 全局连接池
-_pool: aiomysql.Pool = None
-
-
-async def get_pool() -> aiomysql.Pool:
-    """获取（或创建）全局 MySQL 连接池"""
-    global _pool
-    if _pool is None:
-        _pool = await aiomysql.create_pool(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            db=DB_NAME,
-            charset="utf8mb4",
-            autocommit=True,
-            minsize=1,
-            maxsize=10,
-        )
-    return _pool
-
-
-async def _get_conn():
-    """从连接池获取连接"""
-    pool = await get_pool()
-    return await pool.acquire()
-
-
-def _release_conn(conn):
-    """释放连接回池"""
-    global _pool
-    if _pool:
-        _pool.release(conn)
+from .db_pool import get_pool, _query_one, _query_all, _execute, _execute_rowcount
 
 
 async def init_db():
@@ -95,51 +53,21 @@ async def init_db():
                     INDEX idx_checkin_date (checkin_date)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             """)
+    # 同时初始化 rag_documents 表（知识库文档）
+    try:
+        from .document_store import init_document_store
+        await init_document_store()
+    except Exception as e:
+        print(f"[WARN] rag_documents 表初始化失败: {e}")
+
+    from .db_pool import DB_HOST, DB_PORT, DB_NAME
     print(f"[PlanStore] MySQL 数据库初始化完成: {DB_HOST}:{DB_PORT}/{DB_NAME}")
 
 
 async def close_pool():
     """关闭连接池（应用退出时调用）"""
-    global _pool
-    if _pool:
-        _pool.close()
-        await _pool.wait_closed()
-        _pool = None
-
-
-async def _query_one(sql: str, params: tuple = None) -> Optional[Dict]:
-    """执行查询，返回单行 dict"""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute(sql, params)
-            return await cur.fetchone()
-
-
-async def _query_all(sql: str, params: tuple = None) -> List[Dict]:
-    """执行查询，返回多行 list[dict]"""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor(aiomysql.DictCursor) as cur:
-            await cur.execute(sql, params)
-            return await cur.fetchall()
-
-
-async def _execute(sql: str, params: tuple = None) -> int:
-    """执行 INSERT/UPDATE/DELETE，返回 lastrowid"""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(sql, params)
-            return cur.lastrowid
-
-
-async def _execute_rowcount(sql: str, params: tuple = None) -> int:
-    """执行 UPDATE/DELETE，返回 affected rows"""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            return await cur.execute(sql, params)
+    from .db_pool import close_pool as _close
+    await _close()
 
 
 # ===== 计划 CRUD =====
