@@ -558,6 +558,12 @@ export const planAssistantApi = {
     const response = await api.get(`/ai/rag/documents${params}`);
     return response.data;
   },
+
+  getDocumentPreview: async (docId: string, userId?: string): Promise<{ id: string; name: string; content: string; length: number }> => {
+    const params = userId ? `?user_id=${userId}` : '';
+    const response = await api.get(`/ai/rag/document/${docId}${params}`);
+    return response.data;
+  },
 };
 
 export const chatApi = {

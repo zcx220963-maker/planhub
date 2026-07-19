@@ -9,8 +9,9 @@
  * - 文档删除
  */
 
-import React from 'react';
-import { Upload, FileText, Trash2, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Upload, FileText, Trash2, Loader2, X, BookOpen } from 'lucide-react';
+import { aiApi } from '../services/api';
 
 interface Document {
     id: number;
@@ -45,6 +46,22 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
         }
     };
 
+    // ── 文档预览状态 ──
+    const [previewDoc, setPreviewDoc] = useState<{ id: string; name: string; content: string; length: number } | null>(null);
+    const [previewLoading, setPreviewLoading] = useState(false);
+
+    const handlePreview = async (docId: string) => {
+        setPreviewLoading(true);
+        try {
+            const data = await aiApi.getDocumentPreview(docId);
+            setPreviewDoc(data);
+        } catch {
+            // 静默失败
+        } finally {
+            setPreviewLoading(false);
+        }
+    };
+
     return (
         <div style={{
             width: '350px',
@@ -53,6 +70,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
             display: 'flex',
             flexDirection: 'column',
             height: '100%',
+            position: 'relative',
         }}>
             {/* 头部 */}
             <div style={{
@@ -177,11 +195,11 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
                                     alignItems: 'center',
                                     justifyContent: 'space-between',
                                     padding: '10px 12px',
-                                    background: selectedDocIds.includes(doc.id) ? '#f1f5f9' : 'white',
+                                    background: selectedDocIds.includes(doc.id) ? '#eef2ff' : (previewDoc?.id === doc.id) ? '#f8fafc' : 'white',
                                     borderRadius: '8px',
                                     marginBottom: '8px',
                                     border: '1px solid',
-                                    borderColor: selectedDocIds.includes(doc.id) ? '#667eea' : '#e2e8f0',
+                                    borderColor: selectedDocIds.includes(doc.id) ? '#6366f1' : '#e2e8f0',
                                     transition: 'all 0.2s',
                                 }}
                             >
@@ -199,12 +217,17 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
                                         onChange={() => onToggleSelection(doc.id)}
                                         style={{ cursor: 'pointer', flexShrink: 0 }}
                                     />
-                                    <div style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '8px',
-                                        overflow: 'hidden',
-                                    }}>
+                                    <div
+                                        style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '8px',
+                                            overflow: 'hidden',
+                                            flex: 1,
+                                        }}
+                                        onClick={() => handlePreview(doc.id)}
+                                        title="点击预览文档内容"
+                                    >
                                         <FileText size={16} style={{ color: '#64748b', flexShrink: 0 }} />
                                         <span style={{
                                             fontSize: '13px',
@@ -212,11 +235,36 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
                                             overflow: 'hidden',
                                             textOverflow: 'ellipsis',
                                             whiteSpace: 'nowrap',
+                                            cursor: 'pointer',
                                         }}>
                                             {doc.name}
                                         </span>
                                     </div>
                                 </label>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); handlePreview(doc.id); }}
+                                    style={{
+                                        background: 'none',
+                                        border: 'none',
+                                        color: '#94a3b8',
+                                        cursor: 'pointer',
+                                        padding: '4px',
+                                        borderRadius: '4px',
+                                        transition: 'all 0.2s',
+                                        flexShrink: 0,
+                                    }}
+                                    onMouseEnter={(e) => {
+                                        e.currentTarget.style.color = '#6366f1';
+                                        e.currentTarget.style.background = '#eef2ff';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                        e.currentTarget.style.color = '#94a3b8';
+                                        e.currentTarget.style.background = 'none';
+                                    }}
+                                    title="预览文档"
+                                >
+                                    <BookOpen size={14} />
+                                </button>
                                 <button
                                     onClick={() => onDelete(doc.id)}
                                     style={{
@@ -275,6 +323,102 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
                     </div>
                 )}
             </div>
+
+            {/* ── 文档预览面板 ── */}
+            {previewDoc && (
+                <div style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    background: 'white',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    zIndex: 10,
+                }}>
+                    {/* 预览头部 */}
+                    <div style={{
+                        padding: '14px 16px',
+                        borderBottom: '1px solid #e5e7eb',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: '#faf9f6',
+                        flexShrink: 0,
+                    }}>
+                        <div style={{ flex: 1, minWidth: 0, marginRight: 8 }}>
+                            <div style={{
+                                fontSize: '14px',
+                                fontWeight: 600,
+                                color: '#1a1a2e',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                            }}>
+                                {previewDoc.name}
+                            </div>
+                            <div style={{
+                                fontSize: '11px',
+                                color: '#94a3b8',
+                                marginTop: 2,
+                            }}>
+                                {previewDoc.length.toLocaleString()} 字符
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setPreviewDoc(null)}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: '#94a3b8',
+                                padding: 6,
+                                borderRadius: 6,
+                                display: 'flex',
+                                alignItems: 'center',
+                                flexShrink: 0,
+                            }}
+                            title="关闭预览"
+                        >
+                            <X size={16} />
+                        </button>
+                    </div>
+                    {/* 预览内容 */}
+                    <div style={{
+                        flex: 1,
+                        overflowY: 'auto',
+                        padding: '20px 24px',
+                        background: '#faf9f6',
+                    }}>
+                        {previewLoading ? (
+                            <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                height: '100%',
+                                color: '#94a3b8',
+                                fontSize: 13,
+                            }}>
+                                <Loader2 size={18} style={{ animation: 'spin 1s linear infinite', marginRight: 8 }} />
+                                加载中...
+                            </div>
+                        ) : (
+                            <pre style={{
+                                fontFamily: "'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif",
+                                fontSize: 14,
+                                lineHeight: 1.8,
+                                color: '#374151',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-word',
+                                margin: 0,
+                            }}>
+                                {previewDoc.content}
+                            </pre>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };
