@@ -14,19 +14,20 @@ import { Upload, FileText, Trash2, Loader2, X, BookOpen } from 'lucide-react';
 import { planAssistantApi } from '../services/api';
 
 interface Document {
-    id: number;
+    id: string;
     name: string;
     content?: string;
 }
 
 interface DocumentManagerProps {
     documents: Document[];
-    selectedDocIds: number[];
+    selectedDocIds: string[];
     onUpload: (files: FileList) => Promise<void>;
-    onDelete: (docId: number) => Promise<void>;
-    onToggleSelection: (docId: number) => void;
+    onDelete: (docId: string) => Promise<void>;
+    onToggleSelection: (docId: string) => void;
     onToggleAll: () => void;
     isUploading?: boolean;
+    userId?: string;
 }
 
 const DocumentManager: React.FC<DocumentManagerProps> = ({
@@ -37,6 +38,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
     onToggleSelection,
     onToggleAll,
     isUploading = false,
+    userId = 'standalone_user',
 }) => {
     const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = e.target.files;
@@ -53,7 +55,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
     const handlePreview = async (docId: string) => {
         setPreviewLoading(true);
         try {
-            const data = await planAssistantApi.getDocumentPreview(docId);
+            const data = await planAssistantApi.getDocumentPreview(docId, userId);
             setPreviewDoc(data);
         } catch {
             // 静默失败

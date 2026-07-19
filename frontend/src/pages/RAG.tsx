@@ -33,7 +33,7 @@ const RAG: React.FC = () => {
   const [queryHistory, setQueryHistory] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
-  const [selectedDocIds, setSelectedDocIds] = useState<number[]>([]);  // 选中的文档ID列表
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);  // 选中的文档ID列表
 
   useEffect(() => {
     loadDocuments();
@@ -118,7 +118,7 @@ const RAG: React.FC = () => {
   };
 
   // 切换文档选择
-  const toggleDocSelection = (docId: number) => {
+  const toggleDocSelection = (docId: string) => {
     if (selectedDocIds.includes(docId)) {
       setSelectedDocIds(selectedDocIds.filter(id => id !== docId));
     } else {
@@ -172,7 +172,7 @@ const RAG: React.FC = () => {
     }
   };
 
-  const deleteDocument = async (docId: number, docName: string) => {
+  const deleteDocument = async (docId: string, docName: string) => {
     if (!confirm(`确定要删除文档 "${docName}" 吗？`)) return;
     try {
       const userId = user?.id || 'anonymous';

@@ -63,6 +63,44 @@ interface DebugInfo {
   };
 }
 
+// ─── 日志分类器（根据内容返回图标、标签、颜色）────────────────────────────────
+
+interface LogCategory {
+  icon: string;
+  label: string;
+  color: string;
+  borderColor: string;
+}
+
+function categorizeLog(content: string): LogCategory {
+  // 失败/错误
+  if (/✗|失败|错误|异常|未连接|无法/i.test(content)) {
+    return { icon: '✕', label: '遇到问题', color: '#e11d48', borderColor: '#fecdd3' };
+  }
+  // 成功完成
+  if (/✓|完成|已生成|已选择|检索到|返回数据/i.test(content)) {
+    return { icon: '✓', label: '完成', color: '#059669', borderColor: '#a7f3d0' };
+  }
+  // HTML / 杂志生成
+  if (/杂志|HTML|html|预览|页面/i.test(content)) {
+    return { icon: '◈', label: '排版设计', color: '#7c3aed', borderColor: '#ddd6fe' };
+  }
+  // 工具调用
+  if (/调用|工具|tool/i.test(content)) {
+    return { icon: '⚙', label: '工具调用', color: '#2563eb', borderColor: '#bfdbfe' };
+  }
+  // 文档检索
+  if (/文档|检索|知识库|doc/i.test(content)) {
+    return { icon: '❖', label: '知识检索', color: '#d97706', borderColor: '#fde68a' };
+  }
+  // 分析/思考
+  if (/分析|选择|推理|了解|需求/i.test(content)) {
+    return { icon: '◆', label: '智能分析', color: '#4f46e5', borderColor: '#c7d2fe' };
+  }
+  // 默认 — 生成中
+  return { icon: '✦', label: '进行中', color: '#6366f1', borderColor: '#e0e7ff' };
+}
+
 const LangGraphTest = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -124,7 +162,7 @@ const LangGraphTest = () => {
 
   // 知识库相关状态
   const [documents, setDocuments] = useState<any[]>([]);
-  const [selectedDocIds, setSelectedDocIds] = useState<number[]>([]);
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [showDocPanel, setShowDocPanel] = useState(false);
 
@@ -321,7 +359,7 @@ const LangGraphTest = () => {
   };
 
   // 删除文档
-  const handleDeleteDocument = async (docId: number) => {
+  const handleDeleteDocument = async (docId: string) => {
     try {
       const response = await fetch(`${AI_API_BASE}/rag/documents/${docId}?user_id=${STANDALONE_USER_ID}`, {
         method: 'DELETE',
@@ -340,7 +378,7 @@ const LangGraphTest = () => {
   };
 
   // 切换文档选择
-  const toggleDocSelection = (docId: number) => {
+  const toggleDocSelection = (docId: string) => {
     setSelectedDocIds(prev => {
       if (prev.includes(docId)) {
         return prev.filter(id => id !== docId);
@@ -1598,44 +1636,146 @@ const LangGraphTest = () => {
                 />
               </div>
             ) : (
-              /* 生成中 → 显示执行日志（同一位置） */
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+              /* 生成中 → 显示执行日志（杂志风时间线） */
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#faf9f6' }}>
+                {/* 头部 — 进度状态条 */}
                 <div style={{
-                  padding: '8px 16px',
-                  background: '#f8fafc',
-                  borderBottom: '1px solid #e2e8f0',
+                  padding: '14px 20px',
+                  background: 'white',
+                  borderBottom: '1px solid #e5e7eb',
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
+                  gap: '10px',
                   flexShrink: 0,
                 }}>
-                  <Loader2 size={14} style={{ animation: 'spin 1s linear infinite', color: '#6366f1' }} />
-                  <span style={{ fontSize: '13px', color: '#334155', fontWeight: 500 }}>
-                    生成中...
-                  </span>
+                  <div style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: '50%',
+                    border: '2px solid #e5e7eb',
+                    borderTopColor: '#6366f1',
+                    animation: 'spin 0.8s linear infinite',
+                    flexShrink: 0,
+                  }} />
+                  <div style={{ flex: 1 }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#1a1a2e' }}>
+                      正在为您精心策划
+                    </span>
+                    {logs.length > 0 && (
+                      <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: 8 }}>
+                        已完成 {logs.length} 步
+                      </span>
+                    )}
+                  </div>
                 </div>
+
+                {/* 日志时间线 */}
                 <div style={{
                   flex: 1,
                   overflowY: 'auto',
-                  padding: '16px',
-                  background: '#0f172a',
-                  fontFamily: "'SF Mono', 'Fira Code', 'Consolas', monospace",
-                  fontSize: '13px',
-                  lineHeight: 1.8,
+                  padding: '20px 20px 24px',
                 }}>
                   {logs.length === 0 ? (
-                    <span style={{ color: '#64748b' }}>等待执行...</span>
+                    <div style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      height: '100%',
+                      gap: 12,
+                      color: '#94a3b8',
+                    }}>
+                      <div style={{
+                        width: 48,
+                        height: 48,
+                        borderRadius: '50%',
+                        background: '#f1f5f9',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 20,
+                      }}>✦</div>
+                      <span style={{ fontSize: 13 }}>准备就绪，正在启动...</span>
+                    </div>
                   ) : (
-                    logs.map((log, i) => (
-                      <div key={i} style={{ display: 'flex', gap: '10px', marginBottom: '4px' }}>
-                        <span style={{ color: '#475569', flexShrink: 0, userSelect: 'none' }}>
-                          [{log.time}]
-                        </span>
-                        <span style={{ color: '#cbd5e1' }}>
-                          {log.content}
-                        </span>
-                      </div>
-                    ))
+                    <div style={{ position: 'relative' }}>
+                      {/* 时间线竖线 */}
+                      <div style={{
+                        position: 'absolute',
+                        left: 9,
+                        top: 18,
+                        bottom: 0,
+                        width: 2,
+                        background: 'linear-gradient(180deg, #e0e7ff, #f1f5f9)',
+                        borderRadius: 1,
+                      }} />
+                      {logs.map((log, i) => {
+                        const cat = categorizeLog(log.content);
+                        return (
+                          <div
+                            key={i}
+                            style={{
+                              display: 'flex',
+                              gap: 12,
+                              marginBottom: 14,
+                              position: 'relative',
+                              paddingLeft: 32,
+                              animation: i === logs.length - 1 ? 'fadeSlideIn 0.3s ease' : undefined,
+                            }}
+                          >
+                            {/* 时间点 */}
+                            <div style={{
+                              position: 'absolute',
+                              left: 3,
+                              top: 4,
+                              width: 14,
+                              height: 14,
+                              borderRadius: '50%',
+                              background: cat.color,
+                              border: '3px solid white',
+                              boxShadow: `0 0 0 2px ${cat.color}33`,
+                              zIndex: 1,
+                            }} />
+                            {/* 内容卡片 */}
+                            <div className="log-card" style={{
+                              flex: 1,
+                              background: 'white',
+                              borderRadius: 10,
+                              padding: '10px 14px',
+                              border: `1px solid ${cat.borderColor}`,
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                              transition: 'box-shadow 0.2s, transform 0.2s',
+                            }}>
+                              <div style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                marginBottom: 3,
+                              }}>
+                                <span style={{ fontSize: 12, lineHeight: 1 }}>{cat.icon}</span>
+                                <span style={{
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  color: cat.color,
+                                  textTransform: 'uppercase',
+                                  letterSpacing: 0.5,
+                                }}>{cat.label}</span>
+                                <span style={{
+                                  fontSize: 10,
+                                  color: '#c7c9cc',
+                                  marginLeft: 'auto',
+                                }}>{log.time}</span>
+                              </div>
+                              <div style={{
+                                fontSize: 13,
+                                color: '#374151',
+                                lineHeight: 1.6,
+                              }}>{log.content}</div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
                   <div ref={logsEndRef} />
                 </div>
@@ -1666,6 +1806,14 @@ const LangGraphTest = () => {
         @keyframes blink {
           0%, 50% { opacity: 1; }
           51%, 100% { opacity: 0; }
+        }
+        @keyframes fadeSlideIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .log-card:hover {
+          box-shadow: 0 4px 12px rgba(0,0,0,0.08) !important;
+          transform: translateY(-1px);
         }
       `}</style>
     </div>
