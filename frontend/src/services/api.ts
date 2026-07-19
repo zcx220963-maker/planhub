@@ -554,13 +554,13 @@ export const planAssistantApi = {
 
   getDocuments: async (userId?: string): Promise<{ documents: any[] }> => {
     const params = userId ? `?user_id=${userId}` : '';
-    const response = await api.get(`/ai/rag/documents${params}`);
+    const response = await api.get(`/rag/documents${params}`);
     return response.data;
   },
 
   getDocumentPreview: async (docId: string, userId?: string): Promise<{ id: string; name: string; content: string; length: number }> => {
     const params = userId ? `?user_id=${userId}` : '';
-    const response = await api.get(`/ai/rag/document/${docId}${params}`);
+    const response = await api.get(`/rag/document/${docId}${params}`);
     return response.data;
   },
 };
