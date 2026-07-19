@@ -7,18 +7,29 @@ export default defineConfig({
   server: {
     port: 5174,
     proxy: {
-      // 静态资源（头像等）
+      // 静态资源
       '/uploads': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
-      // AI + RAG 接口（FastAPI 直接服务）
+      // AI / RAG / 计划库 / 对话历史 — FastAPI 直接服务（无 Java 中间层）
       '/api/ai': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
-      // 计划预览 HTML 文件
+      '/rag': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/plans': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       '/orchestrator': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      '/conversations': {
         target: 'http://localhost:8000',
         changeOrigin: true,
       },

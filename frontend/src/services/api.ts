@@ -2,11 +2,30 @@ import axios from 'axios';
 import type { AxiosInstance } from 'axios';
 import type { User, Plan, PlanTask, Post, Comment, LoginResponse, ApiResponse, LoginRequest, RegisterRequest, CreatePlanRequest, PlanCheckin, SearchResponse, UserProfileResponse, ChangePasswordRequest, Activity, Notification, ChatConversation, ChatMessage, LikedItemResponse } from '../types';
 
-const API_BASE_URL = '/api/ai';  // 经 Vite proxy 转发到 Python 8000
+const AI_API_BASE_URL = '/api/ai';  // AI 对话/RAG 查询（经 Vite proxy → Python 8000）
+const RAG_API_BASE_URL = '/rag';    // RAG 文档管理（上传/列表/预览）
+const PLANS_API_BASE_URL = '/plans'; // 计划库
 const UPLOAD_BASE_URL = '/uploads';
 
+// 通用 AI API（对话、RAG 查询、助手）
 const api: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: AI_API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// RAG 文档管理 API（独立前缀 /rag）
+const ragApi: AxiosInstance = axios.create({
+  baseURL: RAG_API_BASE_URL,
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// 计划库 API
+const plansApi: AxiosInstance = axios.create({
+  baseURL: PLANS_API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -407,35 +426,16 @@ export const checkinApi = {
 };
 
 // AI 服务通过 Java 后端安全网关转发
-// 前端直接调用 Python AI 服务（经 Vite proxy 转发到 8000），无 Java 中间层
-const AI_API_BASE_URL = '/api/ai';
-
-const aiApi = axios.create({
-  baseURL: AI_API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
-
-// 为 aiApi 添加请求拦截器（与 api 保持一致）
-aiApi.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
-aiApi.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
+// 为 ragApi / plansApi 添加 JWT 请求拦截器
+[ragApi, plansApi].forEach((instance) => {
+  instance.interceptors.request.use((config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
     }
-    return Promise.reject(error);
-  }
-);
+    return config;
+  });
+});
 
 export const planAssistantApi = {
   chat: async (message: string, sessionId?: string): Promise<{ response: string; session_id: string }> => {
@@ -544,7 +544,7 @@ export const planAssistantApi = {
     if (userId) {
       formData.append('user_id', userId);
     }
-    const response = await api.post('/ai/rag/upload', formData, {
+    const response = await ragApi.post('/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -554,13 +554,13 @@ export const planAssistantApi = {
 
   getDocuments: async (userId?: string): Promise<{ documents: any[] }> => {
     const params = userId ? `?user_id=${userId}` : '';
-    const response = await api.get(`/rag/documents${params}`);
+    const response = await ragApi.get(`/documents${params}`);
     return response.data;
   },
 
   getDocumentPreview: async (docId: string, userId?: string): Promise<{ id: string; name: string; content: string; length: number }> => {
     const params = userId ? `?user_id=${userId}` : '';
-    const response = await api.get(`/rag/document/${docId}${params}`);
+    const response = await ragApi.get(`/document/${docId}${params}`);
     return response.data;
   },
 };
