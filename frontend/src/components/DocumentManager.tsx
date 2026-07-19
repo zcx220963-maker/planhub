@@ -11,7 +11,7 @@
 
 import React, { useState } from 'react';
 import { Upload, FileText, Trash2, Loader2, X, BookOpen } from 'lucide-react';
-import { aiApi } from '../services/api';
+import { planAssistantApi } from '../services/api';
 
 interface Document {
     id: number;
@@ -53,7 +53,7 @@ const DocumentManager: React.FC<DocumentManagerProps> = ({
     const handlePreview = async (docId: string) => {
         setPreviewLoading(true);
         try {
-            const data = await aiApi.getDocumentPreview(docId);
+            const data = await planAssistantApi.getDocumentPreview(docId);
             setPreviewDoc(data);
         } catch {
             // 静默失败
