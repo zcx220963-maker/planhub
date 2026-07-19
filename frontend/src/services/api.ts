@@ -2,8 +2,8 @@ import axios from 'axios';
 import type { AxiosInstance } from 'axios';
 import type { User, Plan, PlanTask, Post, Comment, LoginResponse, ApiResponse, LoginRequest, RegisterRequest, CreatePlanRequest, PlanCheckin, SearchResponse, UserProfileResponse, ChangePasswordRequest, Activity, Notification, ChatConversation, ChatMessage, LikedItemResponse } from '../types';
 
-const API_BASE_URL = 'http://localhost:8080/api';
-const UPLOAD_BASE_URL = 'http://localhost:8080';
+const API_BASE_URL = '/api/ai';  // 经 Vite proxy 转发到 Python 8000
+const UPLOAD_BASE_URL = '/uploads';
 
 const api: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -407,12 +407,11 @@ export const checkinApi = {
 };
 
 // AI 服务通过 Java 后端安全网关转发
-// 前端不再直接调用 Python AI 服务，所有请求先经过 Java 验证 JWT
-// Java 后端会通过内部密钥 (X-Internal-Api-Secret) 转发请求到 Python
+// 前端直接调用 Python AI 服务（经 Vite proxy 转发到 8000），无 Java 中间层
 const AI_API_BASE_URL = '/api/ai';
 
 const aiApi = axios.create({
-  baseURL: API_BASE_URL,  // 使用 Java 后端的基础 URL（http://localhost:8080/api）
+  baseURL: AI_API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },

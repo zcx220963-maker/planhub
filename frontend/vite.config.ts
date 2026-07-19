@@ -7,22 +7,19 @@ export default defineConfig({
   server: {
     port: 5174,
     proxy: {
-      '/api': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-        configure: (proxy) => {
-          proxy.on('proxyRes', (proxyRes, req, res) => {
-            if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
-              res.setHeader('Cache-Control', 'no-cache');
-              res.setHeader('X-Accel-Buffering', 'no');
-              res.setHeader('Connection', 'keep-alive');
-              res.flushHeaders();
-            }
-          });
-        },
-      },
+      // 静态资源（头像等）
       '/uploads': {
-        target: 'http://localhost:8080',
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // AI + RAG 接口（FastAPI 直接服务）
+      '/api/ai': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // 计划预览 HTML 文件
+      '/orchestrator': {
+        target: 'http://localhost:8000',
         changeOrigin: true,
       },
     },
