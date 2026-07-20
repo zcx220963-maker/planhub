@@ -236,6 +236,7 @@ def _build_html_system_prompt() -> str:
      示例：https://picsum.photos/seed/nanjing/800/400
      多个关键词组合：https://picsum.photos/seed/nanjing-food/800/400
    - 关键词示例对照：鸡胸肉→chicken、南京→nanjing、西湖→west-lake、灵隐寺→temple、杭帮菜→hangzhou-food
+   - ⚠️ 域名必须是 picsum.photos，禁止拼写为 picsum.phones 或其他错误形式
    - 禁止所有段落使用同一张图（每个段落用不同关键词）
    - 图片需有圆角、阴影，且自适应宽度
 

@@ -78,6 +78,34 @@ def extract_html_code(raw_content: str) -> Optional[str]:
     return None
 
 
+def _fix_image_urls(html_code: str) -> str:
+    """修复 LLM 可能拼错的图片域名（如 picsum.phones → picsum.photos）"""
+    # 修复 picsum.phones / picsum.phots 等常见拼写错误
+    fixed = re.sub(
+        r'https?://picsum\.phones(/seed)?',
+        r'https://picsum.photos\1',
+        html_code,
+        flags=re.IGNORECASE
+    )
+    # 修复 picsum.phots 等变体
+    fixed = re.sub(
+        r'https?://picsum\.pho(?:t|ts|tes)?(s)?(?=/seed|/)',
+        r'https://picsum.photos',
+        fixed,
+        flags=re.IGNORECASE
+    )
+    # 兜底：picsum. 后面只要不是 photos 就替换
+    fixed = re.sub(
+        r'https?://picsum\.photos?(?![a-z])',
+        r'https://picsum.photos',
+        fixed,
+        flags=re.IGNORECASE
+    )
+    if fixed != html_code:
+        print("[HTML Generator] 修复了图片域名拼写错误")
+    return fixed
+
+
 def generate_plan_html(plan_text: str, plan_summary: str = "", session_id: str = "", plan_id: int = None) -> Optional[str]:
     """提取 LLM 生成的 HTML 代码并保存为独立文件
 
@@ -95,6 +123,9 @@ def generate_plan_html(plan_text: str, plan_summary: str = "", session_id: str =
     if not html_code:
         print(f"[HTML Generator] 未找到 HTML 代码块，跳过")
         return None
+
+    # 修复图片域名拼写错误（LLM 常把 picsum.photos 拼成 picsum.phones）
+    html_code = _fix_image_urls(html_code)
 
     # 生成文件名
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

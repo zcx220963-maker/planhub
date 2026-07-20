@@ -1231,22 +1231,14 @@ const LangGraphTest = () => {
                     ...(isUser ? styles.userMessage : styles.assistantMessage),
                   }}
                 >
-                  <div style={{
-                    ...styles.avatar,
-                    ...(isUser ? styles.userAvatar : styles.assistantAvatar),
-                  }}>
-                    {isUser ? (
-                      user?.avatarUrl ? (
-                        <img src={getFullAvatarUrl(user.avatarUrl) || ''} alt="用户头像" style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover' }} />
-                      ) : (
-                        <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#ffffff' }}>
-                          {user?.displayName?.[0] || user?.username?.[0] || '?'}
-                        </span>
-                      )
-                    ) : (
+                  {!isUser && (
+                    <div style={{
+                      ...styles.avatar,
+                      ...styles.assistantAvatar,
+                    }}>
                       <img src="/robot-icon.png" alt="对话机器人" style={{ width: 36, height: 36 }} />
-                    )}
-                  </div>
+                    </div>
+                  )}
                   <div style={{ ...styles.messageContent, ...(isUser ? styles.userMessageContent : styles.assistantMessageContent) }}>
                     {/* 意图标签 */}
                     {!isUser && msg.intent && (
@@ -1507,7 +1499,7 @@ const LangGraphTest = () => {
             {isLoading && !messages[messages.length - 1]?.isStreaming && (
               <div style={{ ...styles.message, ...styles.assistantMessage }}>
                 <div style={{ ...styles.avatar, ...styles.assistantAvatar }}>
-                  <img src="/robot-icon.png" alt="对话机器人" style={{ width: 36, height: 36 }} />
+                  <img src="/robot-icon.png" alt="AI" style={{ width: 36, height: 36 }} />
                 </div>
                 <div style={styles.assistantMessageContent}>
                   <Loader2 size={20} style={{ animation: 'spin 1s linear infinite' }} />
