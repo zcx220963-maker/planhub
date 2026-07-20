@@ -514,7 +514,7 @@ HTML 体积大（50-200KB），存数据库会膨胀。改为：
 
 ```env
 ANTHROPIC_AUTH_TOKEN=your_token
-ANTHROPIC_BASE_URL=https://api.longcat.chat/anthropic
+ANTHROPIC_BASE_URL=模型url
 ANTHROPIC_MODEL=模型名称
 ```
 
