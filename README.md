@@ -31,7 +31,7 @@
 |------|------|
 | 前端 | React 19 + TypeScript 6 + Vite 8 + Ant Design 6 |
 | 后端 | Python FastAPI + LangGraph 多 Agent 编排 |
-| AI 模型 | LongCat-2.0（默认）/ Ollama 本地模型 / 阿里云百炼 |
+| AI 模型 | API密钥配置/ Ollama 本地模型
 | 工具协议 | MCP（Model Context Protocol）— 21 个外部工具 |
 | 存储 | MySQL（计划数据）+ Chroma（向量库）+ Redis（可选，会话状态） |
 
@@ -508,14 +508,14 @@ HTML 体积大（50-200KB），存数据库会膨胀。改为：
 
 支持三种 LLM 提供者，通过环境变量切换：
 
-### 1. LongCat-2.0（默认，推荐）
+### 1. thinking模型（默认，推荐）
 
 结构化输出最稳定，适合多 Agent 编排。是 **thinking 模型**，返回 `ThinkingBlock + TextBlock` 内容块列表。
 
 ```env
 ANTHROPIC_AUTH_TOKEN=your_token
 ANTHROPIC_BASE_URL=https://api.longcat.chat/anthropic
-ANTHROPIC_MODEL=LongCat-2.0
+ANTHROPIC_MODEL=模型名称
 ```
 
 **兼容处理**：`extract_text(content)` 函数自动识别内容块列表，拼接 `type=text` 的块，否则下游字符串拼接会报 `TypeError`。
